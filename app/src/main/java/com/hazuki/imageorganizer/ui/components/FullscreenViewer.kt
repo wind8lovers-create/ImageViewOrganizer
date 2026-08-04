@@ -1,0 +1,61 @@
+package com.hazuki.imageorganizer.ui.components
+
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import com.hazuki.imageorganizer.data.DisplayEntry
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun FullscreenViewer(
+    entries: List<DisplayEntry>,
+    startIndex: Int,
+    onDismiss: () -> Unit
+) {
+    val pagerState = rememberPagerState(initialPage = startIndex) { entries.size }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { page ->
+            val image = when (val e = entries[page]) {
+                is DisplayEntry.Single -> e.image
+                is DisplayEntry.Grouped -> e.image
+            }
+            AsyncImage(
+                model = image.uri,
+                contentDescription = image.displayName,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        IconButton(
+            onClick = onDismiss,
+            modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)
+        ) {
+            Icon(Icons.Filled.Close, contentDescription = "閉じる", tint = Color.White)
+        }
+    }
+}

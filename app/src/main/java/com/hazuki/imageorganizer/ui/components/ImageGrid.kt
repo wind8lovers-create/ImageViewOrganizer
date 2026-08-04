@@ -3,35 +3,52 @@ package com.hazuki.imageorganizer.ui.components
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.hazuki.imageorganizer.data.DisplayEntry
 import com.hazuki.imageorganizer.data.ThumbnailSize
+import com.hazuki.imageorganizer.ui.theme.FujiOutline
+import com.hazuki.imageorganizer.ui.theme.FujiPrimaryDark
 import com.hazuki.imageorganizer.ui.theme.GroupOutlineAmber
 import com.hazuki.imageorganizer.ui.theme.GroupOutlineYellow
 import com.hazuki.imageorganizer.ui.theme.SelectionOverlay
+import kotlinx.coroutines.launch
 
 private const val OUTLINE_WIDTH_DP = 3
 
@@ -44,42 +61,124 @@ fun ImageGrid(
     onTap: (Int) -> Unit,
     onLongPress: (Int) -> Unit,
     onGroupCheckboxTap: (groupId: Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState = rememberLazyGridState()
 ) {
-    val state = rememberLazyGridState()
+    val state = gridState
+    val coroutineScope = rememberCoroutineScope()
 
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = thumbnailSize.dp.dp),
-        state = state,
-        modifier = modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp)
-    ) {
-        items(count = entries.size, key = { idx ->
-            when (val e = entries[idx]) {
-                is DisplayEntry.Single -> e.image.id
-                is DisplayEntry.Grouped -> e.image.id
+    Box(modifier = modifier) {
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = thumbnailSize.dp.dp),
+            state = state,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp)
+        ) {
+            items(count = entries.size, key = { idx ->
+                when (val e = entries[idx]) {
+                    is DisplayEntry.Single -> e.image.id
+                    is DisplayEntry.Grouped -> e.image.id
+                }
+            }) { index ->
+                // 列数はGridCells.Adaptiveのため実行時に厳密取得できないので、
+                // LazyGridStateのlayoutInfoから直近のスパン情報を概算する。
+                val columns = state.layoutInfo.visibleItemsInfo
+                    .maxOfOrNull { it.column ?: 0 }
+                    ?.plus(1)?.takeIf { it > 0 } ?: 1
+
+                GridCellContent(
+                    entries = entries,
+                    index = index,
+                    columns = columns,
+                    thumbnailSize = thumbnailSize,
+                    selectedIds = selectedIds,
+                    selectionMode = selectionMode,
+                    onTap = onTap,
+                    onLongPress = onLongPress,
+                    onGroupCheckboxTap = onGroupCheckboxTap
+                )
             }
-        }) { index ->
-            // 列数はGridCells.Adaptiveのため実行時に厳密取得できないので、
-            // LazyGridStateのlayoutInfoから直近のスパン情報を概算する。
-            val columns = state.layoutInfo.visibleItemsInfo
-                .maxOfOrNull { it.column ?: 0 }
-                ?.plus(1)?.takeIf { it > 0 } ?: 1
+        }
 
-            GridCellContent(
-                entries = entries,
-                index = index,
-                columns = columns,
-                thumbnailSize = thumbnailSize,
-                selectedIds = selectedIds,
-                selectionMode = selectionMode,
-                onTap = onTap,
-                onLongPress = onLongPress,
-                onGroupCheckboxTap = onGroupCheckboxTap
+        // 右端の位置インジケーター兼ドラッグ用スクロールバー(全体を100%として現在位置を表示)
+        if (entries.isNotEmpty()) {
+            ScrollPositionBar(
+                gridState = state,
+                totalItems = entries.size,
+                onDragToFraction = { fraction ->
+                    val targetIndex = (fraction * (entries.size - 1)).toInt().coerceIn(0, entries.size - 1)
+                    coroutineScope.launch { state.scrollToItem(targetIndex) }
+                },
+                modifier = Modifier.align(Alignment.CenterEnd)
             )
         }
     }
 }
+
+@Composable
+private fun ScrollPositionBar(
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    totalItems: Int,
+    onDragToFraction: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var trackHeightPx by remember { mutableStateOf(0f) }
+    var isDragging by remember { mutableStateOf(false) }
+    var draggingFraction by remember { mutableStateOf(0f) }
+    val density = LocalDensity.current
+
+    // 現在のスクロール位置を 0f(先頭)〜1f(末尾) の割合として算出
+    val currentFraction by remember {
+        derivedStateOf {
+            val layoutInfo = gridState.layoutInfo
+            val visible = layoutInfo.visibleItemsInfo
+            if (totalItems <= 1 || visible.isEmpty()) 0f
+            else (gridState.firstVisibleItemIndex.toFloat() / (totalItems - 1).toFloat()).coerceIn(0f, 1f)
+        }
+    }
+
+    val displayFraction = if (isDragging) draggingFraction else currentFraction
+
+    Box(
+        modifier = modifier
+            .padding(vertical = 8.dp, horizontal = 2.dp)
+            .width(20.dp)
+            .fillMaxHeight()
+            .onGloballyPositioned { trackHeightPx = it.size.height.toFloat() }
+            .pointerInput(totalItems) {
+                detectDragGestures(
+                    onDragStart = { isDragging = true },
+                    onDragEnd = { isDragging = false },
+                    onDragCancel = { isDragging = false }
+                ) { change, _ ->
+                    change.consume()
+                    if (trackHeightPx > 0f) {
+                        val fraction = (change.position.y / trackHeightPx).coerceIn(0f, 1f)
+                        draggingFraction = fraction
+                        onDragToFraction(fraction)
+                    }
+                }
+            }
+    ) {
+        // 背景の細い線(トラック)
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .width(3.dp)
+                .fillMaxHeight()
+                .background(FujiOutline, shape = androidx.compose.foundation.shape.RoundedCornerShape(2.dp))
+        )
+        // つまみ(現在位置)
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset { IntOffset(0, (displayFraction * (trackHeightPx - with(density) { 28.dp.toPx() })).toInt()) }
+                .size(width = 20.dp, height = 28.dp)
+                .background(FujiPrimaryDark, shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
+        )
+    }
+}
+
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

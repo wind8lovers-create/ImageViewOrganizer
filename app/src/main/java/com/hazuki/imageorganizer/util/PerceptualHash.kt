@@ -17,6 +17,42 @@ object PerceptualHash {
     private const val HASH_WIDTH = 9  // 差分を取るため横+1
     private const val HASH_HEIGHT = 8
 
+    /** 彩度・明度の平均値(0f〜1f)。dHash計算時に使う縮小ビットマップを再利用して計算する。 */
+    data class ColorProfile(val avgSaturation: Float, val avgBrightness: Float)
+
+    /**
+     * dHash と 彩度・明度の平均値を同時に計算する(同じ縮小ビットマップを使い回すため効率的)。
+     * デコードに失敗した場合は null。
+     */
+    fun computeHashAndColor(resolver: ContentResolver, uri: Uri): Pair<Long, ColorProfile>? {
+        val bitmap = decodeSampledBitmap(resolver, uri, HASH_WIDTH, HASH_HEIGHT) ?: return null
+        return try {
+            val small = Bitmap.createScaledBitmap(bitmap, HASH_WIDTH, HASH_HEIGHT, true)
+            val hash = computeFromBitmap(small)
+            val color = computeColorProfile(small)
+            if (small !== bitmap) small.recycle()
+            hash to color
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    private fun computeColorProfile(small: Bitmap): ColorProfile {
+        var satSum = 0f
+        var brightSum = 0f
+        var count = 0
+        val hsv = FloatArray(3)
+        for (y in 0 until small.height) {
+            for (x in 0 until small.width) {
+                android.graphics.Color.colorToHSV(small.getPixel(x, y), hsv)
+                satSum += hsv[1]
+                brightSum += hsv[2]
+                count++
+            }
+        }
+        return if (count == 0) ColorProfile(0f, 0f) else ColorProfile(satSum / count, brightSum / count)
+    }
+
     /**
      * Uriから縮小デコードして dHash(Long) を計算する。
      * デコードに失敗した場合は null を返す。

@@ -3,6 +3,7 @@ package com.hazuki.imageorganizer.ui.screens
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Box
@@ -59,6 +60,24 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
         }
     }
 
+    val zipPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (e: SecurityException) {
+                // 一部の提供元(一部のクラウドストレージ等)は永続許可に対応していないことがあるが、
+                // 今回のセッションでは開けるので処理は続行する
+            }
+            val label = uri.lastPathSegment?.substringAfterLast('/') ?: "選択したZIP"
+            viewModel.openZipFile(uri, label)
+        }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -81,11 +100,35 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
         }
     }
 
-    // 大量枚数の読み込み中は時間がかかることがあるため、画面が消灯しないようにする
+    // 大量枚数の読み込み中・グループ化(ハッシュ計算)中・スライドショー中は時間がかかる/連続視聴中なため、画面が消灯しないようにする
     val view = LocalView.current
-    DisposableEffect(state.isStreaming) {
-        view.keepScreenOn = state.isStreaming
+    DisposableEffect(state.isStreaming, state.isGrouping, state.slideshowActive) {
+        view.keepScreenOn = state.isStreaming || state.isGrouping || state.slideshowActive
         onDispose { view.keepScreenOn = false }
+    }
+
+    // 一覧のスクロール位置を保持し、スライドショー開始位置・終了後の追従に使う
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    LaunchedEffect(state.pendingScrollToIndex) {
+        state.pendingScrollToIndex?.let { idx ->
+            val target = idx.coerceIn(0, (state.entries.size - 1).coerceAtLeast(0))
+            gridState.scrollToItem(target)
+            viewModel.consumePendingScroll()
+        }
+    }
+
+    // 移動・削除・リネーム前にシステムの同意ダイアログを表示するためのランチャー
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.onPermissionResult(result.resultCode == android.app.Activity.RESULT_OK)
+    }
+    val intentSenderRequest by viewModel.intentSenderRequest.collectAsStateWithLifecycle()
+    LaunchedEffect(intentSenderRequest) {
+        intentSenderRequest?.let { sender ->
+            mediaPermissionLauncher.launch(IntentSenderRequest.Builder(sender).build())
+            viewModel.onIntentSenderHandled()
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -98,14 +141,26 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                 OrganizerTopBar(
                     folderLabel = state.currentFolderLabel,
                     imageCount = state.totalImageCount,
+                    folderTotalCount = state.folderTotalCount,
                     isLoading = state.isLoading,
+                    isStreaming = state.isStreaming,
+                    isGrouping = state.isGrouping,
                     onOpenFolder = { folderPickerLauncher.launch(null) },
+                    onOpenZip = { zipPickerLauncher.launch(arrayOf("application/zip")) },
+                    recentEntries = state.recentEntries,
+                    onSelectRecent = { entry -> viewModel.openRecentEntry(entry) },
+                    onSelectDefaultFolder = { viewModel.loadDocumentsFolder() },
                     sameImageOnly = state.sameImageOnly,
                     onToggleSameImageOnly = { viewModel.toggleSameImageOnly() },
                     groupThreshold = state.groupThreshold,
                     onThresholdChange = { viewModel.setGroupThreshold(it) },
+                    colorPreset = state.colorPreset,
+                    onColorPresetSelected = { viewModel.setColorPreset(it) },
+                    groupCount = state.groupCount,
+                    hideSinglesWhenGrouped = state.hideSinglesWhenGrouped,
+                    onToggleHideSingles = { viewModel.toggleHideSingles() },
                     slideshowActive = state.slideshowActive,
-                    onToggleSlideshow = { viewModel.toggleSlideshow() },
+                    onToggleSlideshow = { viewModel.toggleSlideshow(gridState.firstVisibleItemIndex) },
                     thumbnailSize = state.thumbnailSize,
                     onToggleThumbnailSize = {
                         viewModel.setThumbnailSize(
@@ -119,6 +174,7 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     selectionMode = state.selectionMode,
                     selectedCount = state.selectedIds.size,
                     sortEnabled = !state.sameImageOnly,
+                    actionsEnabled = !state.isLoading && !state.isStreaming,
                     currentSortLabel = state.sortOption.label,
                     onSortClick = { viewModel.toggleSortSheet(true) },
                     onSelectClick = { /* 選択モードは長押しで開始する仕様のため、案内のみ */ },
@@ -147,6 +203,7 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                             thumbnailSize = state.thumbnailSize,
                             selectedIds = state.selectedIds,
                             selectionMode = state.selectionMode,
+                            gridState = gridState,
                             onTap = { index ->
                                 if (state.selectionMode) {
                                     val id = entryImageId(state.entries, index)
@@ -191,7 +248,7 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                 interval = state.slideshowInterval,
                 onTapAdvance = { viewModel.advanceSlideshow() },
                 onIntervalSelected = { viewModel.setSlideshowInterval(it) },
-                onStop = { viewModel.toggleSlideshow() }
+                onStop = { viewModel.toggleSlideshow(gridState.firstVisibleItemIndex) }
             )
         }
     }

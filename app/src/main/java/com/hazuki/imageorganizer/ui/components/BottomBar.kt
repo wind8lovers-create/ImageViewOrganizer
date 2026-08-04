@@ -33,6 +33,7 @@ fun OrganizerBottomBar(
     selectionMode: Boolean,
     selectedCount: Int,
     sortEnabled: Boolean,
+    actionsEnabled: Boolean,
     currentSortLabel: String,
     onSortClick: () -> Unit,
     onSelectClick: () -> Unit,
@@ -58,10 +59,12 @@ fun OrganizerBottomBar(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                BottomBarAction(Icons.Filled.DriveFileMove, "移動", onMoveClick)
-                BottomBarAction(Icons.Filled.FolderZip, "ZIP化", onZipClick)
-                BottomBarAction(Icons.Filled.Delete, "削除", onDeleteClick)
-                BottomBarAction(Icons.Filled.DriveFileRenameOutline, "リネーム", onRenameSelectedClick)
+                // 読込・グループ計算が終わっていない状態で移動/削除/リネームを行うと、
+                // 内部データが未確定でクラッシュすることがあるため、完了するまで押せないようにする
+                BottomBarAction(Icons.Filled.DriveFileMove, "移動", onMoveClick, enabled = actionsEnabled)
+                BottomBarAction(Icons.Filled.FolderZip, "ZIP化", onZipClick, enabled = actionsEnabled)
+                BottomBarAction(Icons.Filled.Delete, "削除", onDeleteClick, enabled = actionsEnabled)
+                BottomBarAction(Icons.Filled.DriveFileRenameOutline, "リネーム", onRenameSelectedClick, enabled = actionsEnabled)
                 BottomBarAction(Icons.Filled.Close, "解除(${selectedCount})", onClearSelectionClick)
             }
         } else {

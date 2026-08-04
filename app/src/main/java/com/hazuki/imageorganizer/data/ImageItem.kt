@@ -18,7 +18,10 @@ data class ImageItem(
     val width: Int,
     val height: Int,
     // 類似判定用の知覚ハッシュ(64bit)。計算前は null。
-    var perceptualHash: Long? = null
+    var perceptualHash: Long? = null,
+    // 彩度・明度の平均値(0f〜1f)。グルーピングの追加判定に使う。計算前は null。
+    var avgSaturation: Float? = null,
+    var avgBrightness: Float? = null
 ) {
     /** 拡張子(ドット無し、小文字) */
     val extension: String

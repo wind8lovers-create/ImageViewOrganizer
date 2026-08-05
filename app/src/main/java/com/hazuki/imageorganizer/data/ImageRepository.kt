@@ -296,17 +296,32 @@ class ImageRepository(private val context: Context) {
      * 1枚ずつ直列処理だと2500枚規模で著しく遅くなるため、chunked+async/awaitAllで並列化している
      * (ensureDateTakenと同じ方式)。既にハッシュ計算済みの画像はスキップされる。
      */
+    /**
+     * 知覚ハッシュ + 彩度/明度プロファイル + 代表色パレット(拡張機能用)を計算して ImageItem に設定する。
+     * この処理はCPU計算そのものより「SAF経由でファイルを開く」IO待ちが支配的なため、
+     * CPU用のDispatchers.Defaultではなく、IO待ちに向いたDispatchers.IOで並列実行する
+     * (Defaultのままだと全CPUコアを使い切ろうとして、メイン(UI)スレッドの描画を圧迫し、
+     *  結果的に画面消灯防止(keepScreenOn)の反映が遅れる/カクつく原因になり得るため)。
+     * 1枚ずつ直列処理だと2500枚規模で著しく遅くなるため、chunked+async/awaitAllで並列化している
+     * (ensureDateTakenと同じ方式)。既に計算済みの画像(perceptualHashが設定済み)はスキップされる。
+     */
     suspend fun computeHashes(images: List<ImageItem>): List<ImageItem> = withContext(Dispatchers.IO) {
         val targets = images.filter { it.perceptualHash == null }
         targets.chunked(24).forEach { chunk ->
             chunk.map { item ->
                 async {
-                    val result = PerceptualHash.computeHashAndColor(resolver, item.uri)
+                    val result = PerceptualHash.analyze(resolver, item.uri)
                     if (result != null) {
-                        val (hash, color) = result
-                        item.perceptualHash = hash
-                        item.avgSaturation = color.avgSaturation
-                        item.avgBrightness = color.avgBrightness
+                        item.perceptualHash = result.hash
+                        item.avgSaturation = result.color.avgSaturation
+                        item.avgBrightness = result.color.avgBrightness
+                        item.colorPalette = result.palette
+                        // 既定フォルダ(MediaStore)は読込時点で幅高さ判明済みなので上書きしない。
+                        // SAF/ZIP展開フォルダは読込時点では 0 のままなので、ここで実サイズを埋める。
+                        if (item.width <= 0 || item.height <= 0) {
+                            item.width = result.originalWidth
+                            item.height = result.originalHeight
+                        }
                     }
                 }
             }.awaitAll()

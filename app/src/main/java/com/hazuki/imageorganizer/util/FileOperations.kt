@@ -81,10 +81,12 @@ class FileOperations(private val context: Context) {
      * 表示(ソート)順のリストに対して、REN命名規則で連番リネームする。
      * 呼び出し前に createWriteRequest() での許可が得られている前提。
      * @param orderedImages ソート後の並び順(この順で01, 02, ...と振る)
+     * @param prefix 呼び出し元(ViewModel)で生成したタイムスタンプ接頭辞。
+     *   リネーム後も選択状態を維持するため、ViewModel側で「リネーム後に付く名前」を
+     *   事前に計算して選択の再割り当てに使っており、実際の処理でも同じprefixを使う必要がある。
      */
-    suspend fun renameSequentially(orderedImages: List<ImageItem>): Int = withContext(Dispatchers.IO) {
+    suspend fun renameSequentially(orderedImages: List<ImageItem>, prefix: String): Int = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
-        val prefix = RenameUtil.buildTimestampPrefix()
         var count = 0
         orderedImages.forEachIndexed { index, item ->
             try {
@@ -102,7 +104,7 @@ class FileOperations(private val context: Context) {
     }
 
     /**
-     * 選択画像をZIPアーカイブ化し、Download/ 直下に保存する。
+     * 選択画像をZIPアーカイブ化し、「移動」と同じ保存先(既定フォルダの場合は Download/_Moved_ )に保存する。
      * @return 生成したZIPファイルのUri。失敗時はnull。
      */
     suspend fun zipImages(images: List<ImageItem>, zipFileName: String): Uri? = withContext(Dispatchers.IO) {
@@ -113,7 +115,7 @@ class FileOperations(private val context: Context) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, zipFileName)
                 put(MediaStore.Downloads.MIME_TYPE, "application/zip")
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/$MOVED_FOLDER_NAME")
             }
             val zipUri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return@withContext null
 
@@ -133,6 +135,73 @@ class FileOperations(private val context: Context) {
                 }
             }
             zipUri
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * SAFフォルダを開いている場合のZIP化: 同じツリー内の「_Moved_」サブフォルダにZIPを保存する。
+     * (「移動」がSAFフォルダ内で_Moved_サブフォルダへ移動するのと同じ場所に揃える)
+     */
+    suspend fun zipImagesToMovedSaf(treeUri: Uri, images: List<ImageItem>, zipFileName: String): Uri? = withContext(Dispatchers.IO) {
+        if (images.isEmpty()) return@withContext null
+        val resolver = context.contentResolver
+        try {
+            val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+            val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+            val movedFolderUri = getOrCreateMovedFolder(resolver, treeUri, parentDocUri)
+            val zipDocUri = DocumentsContract.createDocument(
+                resolver, movedFolderUri, "application/zip", zipFileName
+            ) ?: return@withContext null
+
+            resolver.openOutputStream(zipDocUri)?.use { out ->
+                ZipOutputStream(out).use { zos ->
+                    for (item in images) {
+                        try {
+                            resolver.openInputStream(item.uri)?.use { input ->
+                                zos.putNextEntry(ZipEntry(item.displayName))
+                                input.copyTo(zos)
+                                zos.closeEntry()
+                            }
+                        } catch (e: Exception) {
+                            // 1枚失敗しても残りは続行
+                        }
+                    }
+                }
+            }
+            zipDocUri
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * ZIP展開ローカルキャッシュを開いている場合のZIP化: 同じ階層の「_Moved_」フォルダにZIPを保存する。
+     */
+    suspend fun zipImagesToMovedLocal(images: List<ImageItem>, zipFileName: String): java.io.File? = withContext(Dispatchers.IO) {
+        if (images.isEmpty()) return@withContext null
+        try {
+            val firstFile = images.first().uri.path?.let { java.io.File(it) } ?: return@withContext null
+            val movedDir = java.io.File(firstFile.parentFile, MOVED_FOLDER_NAME).apply { mkdirs() }
+            val zipFile = java.io.File(movedDir, zipFileName)
+            java.io.FileOutputStream(zipFile).use { out ->
+                ZipOutputStream(out).use { zos ->
+                    for (item in images) {
+                        try {
+                            val src = item.uri.path?.let { java.io.File(it) } ?: continue
+                            src.inputStream().use { input ->
+                                zos.putNextEntry(ZipEntry(item.displayName))
+                                input.copyTo(zos)
+                                zos.closeEntry()
+                            }
+                        } catch (e: Exception) {
+                            // 1枚失敗しても残りは続行
+                        }
+                    }
+                }
+            }
+            zipFile
         } catch (e: Exception) {
             null
         }
@@ -222,9 +291,8 @@ class FileOperations(private val context: Context) {
     }
 
     /** SAFフォルダ内の画像を、表示順で連番リネームする */
-    suspend fun renameSequentiallySaf(orderedImages: List<ImageItem>): Int = withContext(Dispatchers.IO) {
+    suspend fun renameSequentiallySaf(orderedImages: List<ImageItem>, prefix: String): Int = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
-        val prefix = RenameUtil.buildTimestampPrefix()
         var count = 0
         orderedImages.forEachIndexed { index, item ->
             try {
@@ -271,8 +339,7 @@ class FileOperations(private val context: Context) {
         count
     }
 
-    suspend fun renameSequentiallyLocal(orderedImages: List<ImageItem>): Int = withContext(Dispatchers.IO) {
-        val prefix = RenameUtil.buildTimestampPrefix()
+    suspend fun renameSequentiallyLocal(orderedImages: List<ImageItem>, prefix: String): Int = withContext(Dispatchers.IO) {
         var count = 0
         orderedImages.forEachIndexed { index, item ->
             try {

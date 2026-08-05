@@ -11,6 +11,14 @@ enum class SlideshowInterval(val seconds: Int) {
     S1(1), S3(3), S5(5), S9(9)
 }
 
+/**
+ * 一覧のスクロール位置を指示するためのワンショットイベント。
+ * indexだけを保持する形だと「前回と同じ0番目に戻したい」場合などに値が変化せず
+ * LaunchedEffectが再発火しないため、nonce(発行のたびに変わる値)を持たせて
+ * 毎回確実にスクロール処理が走るようにしている。
+ */
+data class ScrollRequest(val index: Int, val nonce: Long = System.nanoTime())
+
 data class OrganizerUiState(
     val isLoading: Boolean = true,
     val isStreaming: Boolean = false, // 段階読込中(バックグラウンドでバッチ追加中)は true。画面消灯防止に使う。
@@ -40,7 +48,14 @@ data class OrganizerUiState(
     val slideshowActive: Boolean = false,
     val slideshowInterval: SlideshowInterval = SlideshowInterval.S3,
     val slideshowIndex: Int = 0,
-    val pendingScrollToIndex: Int? = null, // スライドショー終了後、一覧をこの位置までスクロールさせるための一時的な指示
+    val pendingScrollRequest: ScrollRequest? = null, // 一覧をこの位置までスクロールさせるための一時的な指示(スライドショー終了後・フォルダ再読込後など)
+
+    // ---- 拡張機能: スタイル一致度検索(基準画像に似た色使いの画像を絞り込む) ----
+    val extensionSheetVisible: Boolean = false, // 設定パネル(ボトムシート)の表示中フラグ
+    val extensionActive: Boolean = false, // 一覧へのフィルタが実際に有効かどうか
+    val originImageId: Long? = null, // 基準画像のID
+    val aspectRatioOnly: Boolean = false, // ON: 基準画像とアスペクト比が一致する画像のみ表示
+    val styleMatchThreshold: Int = 0, // 0〜100。0はフィルタなし(スタイル一致度による絞り込みをしない)
 
     val snackbarMessage: String? = null
 )

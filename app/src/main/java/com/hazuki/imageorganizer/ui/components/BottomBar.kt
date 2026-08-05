@@ -65,6 +65,8 @@ fun OrganizerBottomBar(
                 BottomBarAction(Icons.Filled.FolderZip, "ZIP化", onZipClick, enabled = actionsEnabled)
                 BottomBarAction(Icons.Filled.Delete, "削除", onDeleteClick, enabled = actionsEnabled)
                 BottomBarAction(Icons.Filled.DriveFileRenameOutline, "リネーム", onRenameSelectedClick, enabled = actionsEnabled)
+                // 拡張機能(スタイル一致度検索)は選択中の画像を基準にするため、選択モード側に配置する
+                BottomBarAction(Icons.Filled.Extension, "拡張", onExtensionClick, enabled = actionsEnabled)
                 BottomBarAction(Icons.Filled.Close, "解除(${selectedCount})", onClearSelectionClick)
             }
         } else {
@@ -81,7 +83,6 @@ fun OrganizerBottomBar(
                 )
                 BottomBarAction(Icons.Filled.CheckBox, "選択", onSelectClick)
                 BottomBarAction(Icons.Filled.DriveFileRenameOutline, "リネーム", onRenameClick)
-                BottomBarAction(Icons.Filled.Extension, "拡張", onExtensionClick)
             }
         }
     }

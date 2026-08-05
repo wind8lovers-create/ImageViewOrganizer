@@ -15,8 +15,10 @@ import com.hazuki.imageorganizer.data.RecentFoldersStore
 import com.hazuki.imageorganizer.data.SortOption
 import com.hazuki.imageorganizer.data.ThumbnailSize
 import com.hazuki.imageorganizer.util.ColorGroupPreset
+import com.hazuki.imageorganizer.util.ColorPalette
 import com.hazuki.imageorganizer.util.FileOperations
 import com.hazuki.imageorganizer.util.ImageGrouping
+import com.hazuki.imageorganizer.util.RenameUtil
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,9 +28,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 private sealed class PendingMediaAction {
-    data class Delete(val targets: List<ImageItem>) : PendingMediaAction()
-    data class Move(val targets: List<ImageItem>) : PendingMediaAction()
-    data class Rename(val orderedTargets: List<ImageItem>) : PendingMediaAction()
+    data class Delete(val targets: List<ImageItem>, val restoreScrollIndex: Int) : PendingMediaAction()
+    data class Move(val targets: List<ImageItem>, val restoreScrollIndex: Int) : PendingMediaAction()
+    data class Rename(val orderedTargets: List<ImageItem>, val restoreScrollIndex: Int, val prefix: String) : PendingMediaAction()
 }
 
 class ImageOrganizerViewModel(application: Application) : AndroidViewModel(application) {
@@ -54,6 +56,13 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     // 現在開いているフォルダのソース(再読込時にどちらを呼び直すか判定するため)
     private var currentFolderUri: Uri? = null
     private var currentZipDir: java.io.File? = null
+
+    /**
+     * リネーム直後、次のreloadCurrentFolder()完了時にこの名前群と一致する画像を選択し直すための一時保存。
+     * SAF/ローカルではリネームによって画像のID自体が変わりうる(URIやパスが変わるため)ので、
+     * IDの一致に頼らず「リネームで付くはずの新ファイル名」との一致で選択を復元する。
+     */
+    private var pendingSelectByName: Set<String>? = null
 
     init {
         _uiState.update { it.copy(recentEntries = recentStore.getHistory()) }
@@ -114,19 +123,29 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     // 読み込み
     // ------------------------------------------------------------------
 
-    fun loadDocumentsFolder() {
+    /**
+     * @param scrollTarget 読込完了後に一覧をスクロールさせる位置。
+     *   フォルダを新しく開く操作(起動時の自動復元・フォルダ選択・履歴選択)では既定値の0(先頭)のままでよい。
+     *   移動/削除/リネーム後の再読込(reloadCurrentFolder経由)では、実行前の表示位置を渡すことで
+     *   一覧の見ていた位置をなるべく維持する。
+     */
+    fun loadDocumentsFolder(scrollTarget: Int = 0) {
         currentFolderUri = null
         currentZipDir = null
         _uiState.update { it.copy(isLoading = true, isStreaming = true, currentFolderLabel = "Download/未整理", folderTotalCount = 0) }
         allImages = emptyList()
         viewModelScope.launch {
             repository.loadDefaultFolderStreaming()
-                .onCompletion { _uiState.update { s -> s.copy(isStreaming = false) }; applySortAndGroup() }
+                .onCompletion {
+                    _uiState.update { s -> s.copy(isStreaming = false) }
+                    applySortAndGroup()
+                    requestScroll(scrollTarget)
+                }
                 .collect { progress -> onBatchReceived(progress) }
         }
     }
 
-    fun openFolder(treeUri: Uri, label: String, recordHistory: Boolean = true) {
+    fun openFolder(treeUri: Uri, label: String, recordHistory: Boolean = true, scrollTarget: Int = 0) {
         currentFolderUri = treeUri
         currentZipDir = null
         _uiState.update { it.copy(isLoading = true, isStreaming = true, currentFolderLabel = label, folderTotalCount = 0) }
@@ -138,7 +157,11 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         viewModelScope.launch {
             try {
                 repository.loadFromTreeStreaming(treeUri)
-                    .onCompletion { _uiState.update { s -> s.copy(isStreaming = false) }; applySortAndGroup() }
+                    .onCompletion {
+                        _uiState.update { s -> s.copy(isStreaming = false) }
+                        applySortAndGroup()
+                        requestScroll(scrollTarget)
+                    }
                     .collect { progress -> onBatchReceived(progress) }
             } catch (e: SecurityException) {
                 // 前回のアクセス権限が失効している場合(端末再起動などでURI許可が切れた場合)は既定フォルダへフォールバック
@@ -149,7 +172,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /** ZIP書庫を選択した際の読込。アプリキャッシュへ展開してから通常フォルダと同様に扱う。 */
-    fun openZipFile(zipUri: Uri, label: String, recordHistory: Boolean = true) {
+    fun openZipFile(zipUri: Uri, label: String, recordHistory: Boolean = true, scrollTarget: Int = 0) {
         currentFolderUri = null
         _uiState.update { it.copy(isLoading = true, isStreaming = true, currentFolderLabel = "$label (ZIP)", folderTotalCount = 0) }
         allImages = emptyList()
@@ -162,7 +185,11 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 val dir = repository.extractZipToCache(zipUri)
                 currentZipDir = dir
                 repository.loadFromLocalDirectoryStreaming(dir)
-                    .onCompletion { _uiState.update { s -> s.copy(isStreaming = false) }; applySortAndGroup() }
+                    .onCompletion {
+                        _uiState.update { s -> s.copy(isStreaming = false) }
+                        applySortAndGroup()
+                        requestScroll(scrollTarget)
+                    }
                     .collect { progress -> onBatchReceived(progress) }
             } catch (e: SecurityException) {
                 _uiState.update { it.copy(snackbarMessage = "以前のZIPファイルにアクセスできませんでした") }
@@ -171,8 +198,11 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /** 現在開いているフォルダを、そのソースのまま再読込する(移動/削除/リネーム後の更新用) */
-    private fun reloadCurrentFolder() {
+    /**
+     * 現在開いているフォルダを、そのソースのまま再読込する(移動/削除/リネーム後の更新用)。
+     * @param scrollTarget 再読込完了後に一覧を戻すスクロール位置(実行前の表示位置)。
+     */
+    private fun reloadCurrentFolder(scrollTarget: Int) {
         val zipDir = currentZipDir
         val uri = currentFolderUri
         when {
@@ -180,13 +210,22 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 viewModelScope.launch {
                     _uiState.update { it.copy(isStreaming = true) }
                     repository.loadFromLocalDirectoryStreaming(zipDir)
-                        .onCompletion { _uiState.update { s -> s.copy(isStreaming = false) }; applySortAndGroup() }
+                        .onCompletion {
+                            _uiState.update { s -> s.copy(isStreaming = false) }
+                            applySortAndGroup()
+                            requestScroll(scrollTarget)
+                        }
                         .collect { progress -> onBatchReceived(progress) }
                 }
             }
-            uri != null -> openFolder(uri, _uiState.value.currentFolderLabel)
-            else -> loadDocumentsFolder()
+            uri != null -> openFolder(uri, _uiState.value.currentFolderLabel, recordHistory = false, scrollTarget = scrollTarget)
+            else -> loadDocumentsFolder(scrollTarget = scrollTarget)
         }
+    }
+
+    /** 一覧をこの位置までスクロールさせるよう、Compose側(MainScreen)に一時的な指示を出す */
+    private fun requestScroll(index: Int) {
+        _uiState.update { it.copy(pendingScrollRequest = ScrollRequest(index.coerceAtLeast(0))) }
     }
 
     /**
@@ -231,8 +270,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     private fun applySortAndGroup() {
+        reconcileSelection()
         val state = _uiState.value
         val sorted = sortedImages(state.sortOption)
+
+        if (state.extensionActive) {
+            applyExtensionFilter(sorted, state)
+            return
+        }
 
         val colorOnlyMode = !state.sameImageOnly && state.colorPreset != null
 
@@ -393,6 +438,151 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         return allImages.filter { it.id in ids }
     }
 
+    /**
+     * 読込/再読込のたびに選択状態の整合性を取る。
+     * ・pendingSelectByName が設定されている場合(直前にリネームを行った場合)は、
+     *   IDの一致に頼らず「リネーム後に付くはずの新ファイル名」との一致で選択を再割り当てする。
+     * ・それ以外は、既に存在しない画像ID(移動・削除で消えたもの)を選択から取り除くだけに留める
+     *   (該当しないIDが混ざっていても表示上は無害だが、選択件数の表示がずれるのを防ぐため)。
+     */
+    private fun reconcileSelection() {
+        val nameTargets = pendingSelectByName
+        if (nameTargets != null) {
+            pendingSelectByName = null
+            val matchedIds = allImages.filter { it.displayName in nameTargets }.map { it.id }.toSet()
+            _uiState.update { it.copy(selectedIds = matchedIds, selectionMode = matchedIds.isNotEmpty()) }
+            return
+        }
+        val state = _uiState.value
+        if (state.selectedIds.isEmpty()) return
+        val validIds = allImages.map { it.id }.toSet()
+        val filtered = state.selectedIds.filter { it in validIds }.toSet()
+        if (filtered != state.selectedIds) {
+            _uiState.update { it.copy(selectedIds = filtered, selectionMode = filtered.isNotEmpty()) }
+        }
+    }
+
+    /**
+     * 拡張機能(スタイル一致度検索)のフィルタを一覧に反映する。
+     * 基準画像との類似度は、保存済みの代表色パレット同士の距離計算のみで判定するため、
+     * スライダー操作のたびに呼ばれても画像本体の再デコードは発生しない
+     * (パレット自体は repository.computeHashes() が既存の仕組みと同様にキャッシュしており、
+     *  未計算の画像がある場合のみそこでバックグラウンド計算される)。
+     */
+    private fun applyExtensionFilter(sorted: List<ImageItem>, state: OrganizerUiState) {
+        groupingJob?.cancel()
+        val origin = allImages.firstOrNull { it.id == state.originImageId }
+        if (origin == null) {
+            // 基準画像が移動・削除等で無くなっていた場合は、フィルタを解除して通常表示に戻す
+            _uiState.update {
+                it.copy(
+                    extensionActive = false,
+                    extensionSheetVisible = false,
+                    originImageId = null,
+                    entries = sorted.map { img -> DisplayEntry.Single(img) },
+                    isGrouping = false,
+                    snackbarMessage = "基準画像が見つからないため、拡張機能を解除しました"
+                )
+            }
+            return
+        }
+        groupingJob = viewModelScope.launch {
+            _uiState.update { it.copy(isGrouping = true) }
+            // 代表色パレット・アスペクト比が未計算の画像だけ、ここでバックグラウンド計算する
+            val analyzed = repository.computeHashes(sorted)
+            val current = _uiState.value
+            val filtered = analyzed.filter { candidate ->
+                if (candidate.id == origin.id) return@filter true // 基準画像自身は常に表示する
+                val aspectOk = !current.aspectRatioOnly || run {
+                    val oa = origin.aspectRatio
+                    val ca = candidate.aspectRatio
+                    oa != null && ca != null && ColorPalette.aspectRatioMatches(oa, ca)
+                }
+                val styleOk = current.styleMatchThreshold <= 0 || run {
+                    val op = origin.colorPalette
+                    val cp = candidate.colorPalette
+                    op != null && cp != null && ColorPalette.similarity(op, cp) * 100f >= current.styleMatchThreshold
+                }
+                aspectOk && styleOk
+            }
+            _uiState.update {
+                it.copy(
+                    entries = filtered.map { img -> DisplayEntry.Single(img) },
+                    isGrouping = false,
+                    groupCount = filtered.size
+                )
+            }
+        }
+    }
+
+    /**
+     * 「拡張」ボタン押下時の入り口。選択中の画像を基準(origin)にして設定パネルを開く。
+     * 選択が1枚ならその画像自身、2枚以上なら(ソート表示上での)最初の画像を基準にする。
+     */
+    fun openExtensionPanel() {
+        val selectedIds = _uiState.value.selectedIds
+        if (selectedIds.isEmpty()) {
+            _uiState.update { it.copy(snackbarMessage = "まず、似た画像を探したい画像を選択してください") }
+            return
+        }
+        val currentOrder = _uiState.value.entries.mapNotNull { entry ->
+            when (entry) {
+                is DisplayEntry.Single -> entry.image
+                is DisplayEntry.Grouped -> entry.image
+            }
+        }
+        val origin = currentOrder.firstOrNull { it.id in selectedIds } ?: selectedImages().firstOrNull()
+        if (origin == null) {
+            _uiState.update { it.copy(snackbarMessage = "基準にする画像が見つかりませんでした") }
+            return
+        }
+        _uiState.update {
+            it.copy(
+                extensionSheetVisible = true,
+                extensionActive = true,
+                originImageId = origin.id,
+                aspectRatioOnly = false,
+                styleMatchThreshold = 0
+            )
+        }
+        applySortAndGroup()
+    }
+
+    /** 設定パネル(ボトムシート)を閉じる。フィルタ自体は維持する(再度「拡張」を押すか解除操作でOFFにする) */
+    fun closeExtensionSheet() {
+        _uiState.update { it.copy(extensionSheetVisible = false) }
+    }
+
+    fun toggleAspectRatioOnly(enabled: Boolean) {
+        _uiState.update { it.copy(aspectRatioOnly = enabled) }
+        applySortAndGroup()
+    }
+
+    /** スタイル一致度スライダー(0〜100)。ドラッグ中に毎フレーム再フィルタが走らないようデバウンスする。 */
+    fun setStyleMatchThreshold(value: Int) {
+        val clamped = value.coerceIn(0, 100)
+        _uiState.update { it.copy(styleMatchThreshold = clamped) }
+        thresholdDebounceJob?.cancel()
+        thresholdDebounceJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(150)
+            applySortAndGroup()
+        }
+    }
+
+    /** 拡張機能のフィルタを解除し、通常の一覧表示に戻す */
+    fun disableExtensionFilter() {
+        _uiState.update {
+            it.copy(
+                extensionActive = false,
+                extensionSheetVisible = false,
+                originImageId = null,
+                aspectRatioOnly = false,
+                styleMatchThreshold = 0
+            )
+        }
+        applySortAndGroup()
+    }
+
     // ------------------------------------------------------------------
     // 選択モード時の操作: 移動・削除・リネーム・ZIP化
     // ------------------------------------------------------------------
@@ -405,7 +595,13 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      * IllegalArgumentExceptionで即クラッシュする(移動/削除/リネームが繰り返し落ちる不具合の原因)。
      * そのため、現在開いているフォルダの種類によって処理を分岐する。
      */
-    fun moveSelectedToMovedFolder() {
+    /**
+     * @param visibleIndex 実行直前に一覧で見えていた先頭位置(呼び出し側のLazyGridStateから渡す)。
+     *   移動後の再読込でも、この位置になるべく近い表示を維持するために使う。
+     *   移動した画像自体は一覧から消えるため選択は自然に外れるが、明示的にclearSelectionは呼ばない
+     *   (連続して別の画像を移動・リネームする際に選択し直す手間を減らすため)。
+     */
+    fun moveSelectedToMovedFolder(visibleIndex: Int) {
         val targets = selectedImages()
         if (targets.isEmpty()) {
             _uiState.update { it.copy(snackbarMessage = "移動対象が選択されていません") }
@@ -416,25 +612,24 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         when {
             zipDir != null -> viewModelScope.launch {
                 val moved = fileOps.moveToMovedFolderLocal(targets)
-                clearSelection()
                 _uiState.update { it.copy(snackbarMessage = "${moved.size}件を_Moved_に移動しました") }
-                reloadCurrentFolder()
+                reloadCurrentFolder(visibleIndex)
             }
             treeUri != null -> viewModelScope.launch {
                 val moved = fileOps.moveToMovedFolderSaf(treeUri, targets)
-                clearSelection()
                 _uiState.update { it.copy(snackbarMessage = "${moved.size}件を_Moved_に移動しました") }
-                reloadCurrentFolder()
+                reloadCurrentFolder(visibleIndex)
             }
             else -> {
                 // 既定のDownload/未整理フォルダ(MediaStore経由)の場合のみ、システムの同意ダイアログが必要
-                pendingAction = PendingMediaAction.Move(targets)
+                pendingAction = PendingMediaAction.Move(targets, visibleIndex)
                 _intentSenderRequest.value = fileOps.createWriteRequest(targets)
             }
         }
     }
 
-    fun deleteSelected() {
+    /** @param visibleIndex 実行直前に一覧で見えていた先頭位置(削除後の再読込でこの位置付近を維持する) */
+    fun deleteSelected(visibleIndex: Int) {
         val targets = selectedImages()
         if (targets.isEmpty()) {
             _uiState.update { it.copy(snackbarMessage = "削除対象が選択されていません") }
@@ -447,23 +642,28 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 val count = fileOps.deleteImagesLocal(targets)
                 clearSelection()
                 _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
-                reloadCurrentFolder()
+                reloadCurrentFolder(visibleIndex)
             }
             treeUri != null -> viewModelScope.launch {
                 val count = fileOps.deleteImagesSaf(targets)
                 clearSelection()
                 _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
-                reloadCurrentFolder()
+                reloadCurrentFolder(visibleIndex)
             }
             else -> {
-                pendingAction = PendingMediaAction.Delete(targets)
+                pendingAction = PendingMediaAction.Delete(targets, visibleIndex)
                 _intentSenderRequest.value = fileOps.createDeleteRequest(targets)
             }
         }
     }
 
-    /** 現在の表示(ソート)順のうち、選択された画像だけを対象にリネームする */
-    fun renameSelectedSequentially() {
+    /**
+     * 現在の表示(ソート)順のうち、選択された画像だけを対象にリネームする。
+     * リネーム後も選択状態を維持するため、「リネームで付くはずの新ファイル名」をあらかじめ計算しておき、
+     * 再読込後にその名前を持つ画像を選び直す(pendingSelectByName経由、reconcileSelectionで消費される)。
+     * @param visibleIndex 実行直前に一覧で見えていた先頭位置。
+     */
+    fun renameSelectedSequentially(visibleIndex: Int) {
         val currentOrder = _uiState.value.entries.mapNotNull { entry ->
             when (entry) {
                 is DisplayEntry.Single -> entry.image
@@ -476,23 +676,29 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             _uiState.update { it.copy(snackbarMessage = "リネーム対象が選択されていません") }
             return
         }
+        val prefix = RenameUtil.buildTimestampPrefix()
+        val expectedNewNames = orderedTargets.mapIndexed { index, item ->
+            RenameUtil.buildFileName(prefix, index, item.extension)
+        }.toSet()
+
         val zipDir = currentZipDir
         val treeUri = currentFolderUri
         when {
             zipDir != null -> viewModelScope.launch {
-                val count = fileOps.renameSequentiallyLocal(orderedTargets)
-                clearSelection()
+                pendingSelectByName = expectedNewNames
+                val count = fileOps.renameSequentiallyLocal(orderedTargets, prefix)
                 _uiState.update { it.copy(snackbarMessage = "${count}件をリネームしました") }
-                reloadCurrentFolder()
+                reloadCurrentFolder(visibleIndex)
             }
             treeUri != null -> viewModelScope.launch {
-                val count = fileOps.renameSequentiallySaf(orderedTargets)
-                clearSelection()
+                pendingSelectByName = expectedNewNames
+                val count = fileOps.renameSequentiallySaf(orderedTargets, prefix)
                 _uiState.update { it.copy(snackbarMessage = "${count}件をリネームしました") }
-                reloadCurrentFolder()
+                reloadCurrentFolder(visibleIndex)
             }
             else -> {
-                pendingAction = PendingMediaAction.Rename(orderedTargets)
+                pendingSelectByName = expectedNewNames
+                pendingAction = PendingMediaAction.Rename(orderedTargets, visibleIndex, prefix)
                 _intentSenderRequest.value = fileOps.createWriteRequest(orderedTargets)
             }
         }
@@ -512,8 +718,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         val action = pendingAction
         pendingAction = null
         if (!granted) {
+            // 処理自体が行われていないため、選択・表示位置はそのまま維持する
+            pendingSelectByName = null
             _uiState.update { it.copy(snackbarMessage = "許可されなかったため処理を中止しました") }
-            clearSelection()
             return
         }
         viewModelScope.launch {
@@ -521,33 +728,45 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 is PendingMediaAction.Delete -> {
                     clearSelection()
                     _uiState.update { it.copy(snackbarMessage = "${action.targets.size}件を削除しました") }
-                    reloadCurrentFolder()
+                    reloadCurrentFolder(action.restoreScrollIndex)
                 }
                 is PendingMediaAction.Move -> {
                     val moved = fileOps.moveToMovedFolder(action.targets)
-                    clearSelection()
                     _uiState.update { it.copy(snackbarMessage = "${moved.size}件を Download/_Moved_ に移動しました") }
-                    reloadCurrentFolder()
+                    reloadCurrentFolder(action.restoreScrollIndex)
                 }
                 is PendingMediaAction.Rename -> {
-                    val count = fileOps.renameSequentially(action.orderedTargets)
-                    clearSelection()
+                    val count = fileOps.renameSequentially(action.orderedTargets, action.prefix)
                     _uiState.update { it.copy(snackbarMessage = "${count}件をリネームしました") }
-                    reloadCurrentFolder()
+                    reloadCurrentFolder(action.restoreScrollIndex)
                 }
                 null -> Unit
             }
         }
     }
 
+    /**
+     * 選択画像をZIPアーカイブ化する。保存先は「移動」と同じ場所(既定フォルダなら Download/_Moved_、
+     * SAF/ZIPフォルダならそのフォルダ内の _Moved_ )。フォルダの中身自体は変わらないため再読込は行わず、
+     * 選択・一覧の表示位置もそのまま維持される。
+     */
     fun zipSelected() {
         val targets = selectedImages()
+        if (targets.isEmpty()) {
+            _uiState.update { it.copy(snackbarMessage = "ZIP対象が選択されていません") }
+            return
+        }
         viewModelScope.launch {
             val name = "images_${System.currentTimeMillis()}.zip"
-            val uri = fileOps.zipImages(targets, name)
-            clearSelection()
+            val zipDir = currentZipDir
+            val treeUri = currentFolderUri
+            val success = when {
+                zipDir != null -> fileOps.zipImagesToMovedLocal(targets, name) != null
+                treeUri != null -> fileOps.zipImagesToMovedSaf(treeUri, targets, name) != null
+                else -> fileOps.zipImages(targets, name) != null
+            }
             _uiState.update {
-                it.copy(snackbarMessage = if (uri != null) "ZIPを作成しました: $name" else "ZIP作成に失敗しました")
+                it.copy(snackbarMessage = if (success) "_Moved_ にZIPを作成しました: $name" else "ZIP作成に失敗しました")
             }
         }
     }
@@ -630,11 +849,11 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         slideshowJob?.cancel()
         val stoppedIndex = _uiState.value.slideshowIndex
         // フルスクリーン表示は開かず、一覧側をこの位置までスクロールさせて「続きから見られる」ようにする
-        _uiState.update { it.copy(slideshowActive = false, pendingScrollToIndex = stoppedIndex) }
+        _uiState.update { it.copy(slideshowActive = false, pendingScrollRequest = ScrollRequest(stoppedIndex)) }
     }
 
     /** 一覧のスクロール追従が完了したら呼ぶ(一度だけ実行させるため) */
     fun consumePendingScroll() {
-        _uiState.update { it.copy(pendingScrollToIndex = null) }
+        _uiState.update { it.copy(pendingScrollRequest = null) }
     }
 }

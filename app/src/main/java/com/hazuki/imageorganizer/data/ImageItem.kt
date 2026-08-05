@@ -1,6 +1,7 @@
 package com.hazuki.imageorganizer.data
 
 import android.net.Uri
+import com.hazuki.imageorganizer.util.ColorPalette
 
 /**
  * 一覧に表示する画像1枚分の情報。
@@ -15,13 +16,17 @@ data class ImageItem(
     val dateAddedEpochSec: Long,
     var dateTakenEpochMillis: Long?,  // 撮影日(EXIF起源、無ければ null。ソートで撮影日が必要になるまでは遅延)
     val mimeType: String,
-    val width: Int,
-    val height: Int,
+    // SAF/ZIP経由の読込では読込時点では不明(0)なため var にしてあり、
+    // 拡張機能(代表色抽出)のバックグラウンド計算時に判明した実サイズで後から埋める。
+    var width: Int,
+    var height: Int,
     // 類似判定用の知覚ハッシュ(64bit)。計算前は null。
     var perceptualHash: Long? = null,
     // 彩度・明度の平均値(0f〜1f)。グルーピングの追加判定に使う。計算前は null。
     var avgSaturation: Float? = null,
-    var avgBrightness: Float? = null
+    var avgBrightness: Float? = null,
+    // 拡張機能(スタイル一致度検索)用の代表色パレット(5色+割合)。計算前は null。
+    var colorPalette: List<ColorPalette.PaletteColor>? = null
 ) {
     /** 拡張子(ドット無し、小文字) */
     val extension: String
@@ -30,6 +35,10 @@ data class ImageItem(
     /** 撮影日が無い場合は日付(更新)にフォールバック */
     val effectiveTakenEpochMillis: Long
         get() = dateTakenEpochMillis ?: (dateModifiedEpochSec * 1000L)
+
+    /** 幅・高さが判明していれば算出するアスペクト比(width/height)。未判明(0)ならnull */
+    val aspectRatio: Float?
+        get() = if (width > 0 && height > 0) width.toFloat() / height.toFloat() else null
 }
 
 /** ソート項目(10種類) */

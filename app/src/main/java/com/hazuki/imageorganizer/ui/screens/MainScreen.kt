@@ -31,6 +31,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hazuki.imageorganizer.data.ThumbnailSize
 import com.hazuki.imageorganizer.ui.components.FullscreenViewer
+import com.hazuki.imageorganizer.ui.components.ExtensionBottomSheet
 import com.hazuki.imageorganizer.ui.components.ImageGrid
 import com.hazuki.imageorganizer.ui.components.OrganizerBottomBar
 import com.hazuki.imageorganizer.ui.components.OrganizerTopBar
@@ -46,6 +47,7 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val sheetState = rememberModalBottomSheetState()
+    val extensionSheetState = rememberModalBottomSheetState()
 
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -107,11 +109,11 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
         onDispose { view.keepScreenOn = false }
     }
 
-    // 一覧のスクロール位置を保持し、スライドショー開始位置・終了後の追従に使う
+    // 一覧のスクロール位置を保持し、スライドショー開始位置・終了後の追従、フォルダ再読込後の位置復元に使う
     val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
-    LaunchedEffect(state.pendingScrollToIndex) {
-        state.pendingScrollToIndex?.let { idx ->
-            val target = idx.coerceIn(0, (state.entries.size - 1).coerceAtLeast(0))
+    LaunchedEffect(state.pendingScrollRequest) {
+        state.pendingScrollRequest?.let { req ->
+            val target = req.index.coerceIn(0, (state.entries.size - 1).coerceAtLeast(0))
             gridState.scrollToItem(target)
             viewModel.consumePendingScroll()
         }
@@ -179,11 +181,11 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     onSortClick = { viewModel.toggleSortSheet(true) },
                     onSelectClick = { /* 選択モードは長押しで開始する仕様のため、案内のみ */ },
                     onRenameClick = { /* 通常時のリネームは「選択」してから使う操作のため未選択時は無効表示でも良い */ },
-                    onExtensionClick = { /* 将来の拡張機能用の予約枠 */ },
-                    onMoveClick = { viewModel.moveSelectedToMovedFolder() },
+                    onExtensionClick = { viewModel.openExtensionPanel() },
+                    onMoveClick = { viewModel.moveSelectedToMovedFolder(gridState.firstVisibleItemIndex) },
                     onZipClick = { viewModel.zipSelected() },
-                    onDeleteClick = { viewModel.deleteSelected() },
-                    onRenameSelectedClick = { viewModel.renameSelectedSequentially() },
+                    onDeleteClick = { viewModel.deleteSelected(gridState.firstVisibleItemIndex) },
+                    onRenameSelectedClick = { viewModel.renameSelectedSequentially(gridState.firstVisibleItemIndex) },
                     onClearSelectionClick = { viewModel.clearSelection() }
                 )
             }
@@ -230,6 +232,28 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                 sheetState = sheetState,
                 onSelect = { viewModel.setSortOption(it) },
                 onDismiss = { viewModel.toggleSortSheet(false) }
+            )
+        }
+
+        if (state.extensionSheetVisible) {
+            val originLabel = state.entries.firstNotNullOfOrNull { entry ->
+                val img = when (entry) {
+                    is com.hazuki.imageorganizer.data.DisplayEntry.Single -> entry.image
+                    is com.hazuki.imageorganizer.data.DisplayEntry.Grouped -> entry.image
+                }
+                if (img.id == state.originImageId) img.displayName else null
+            } ?: ""
+            ExtensionBottomSheet(
+                sheetState = extensionSheetState,
+                originLabel = originLabel,
+                matchedCount = state.entries.size,
+                isCalculating = state.isGrouping,
+                aspectRatioOnly = state.aspectRatioOnly,
+                onToggleAspectRatioOnly = { viewModel.toggleAspectRatioOnly(it) },
+                styleMatchThreshold = state.styleMatchThreshold,
+                onStyleMatchThresholdChange = { viewModel.setStyleMatchThreshold(it) },
+                onDisableFilter = { viewModel.disableExtensionFilter() },
+                onDismiss = { viewModel.closeExtensionSheet() }
             )
         }
 

@@ -72,14 +72,24 @@ object PerceptualHash {
     ): Triple<Bitmap, Int, Int>? {
         return try {
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            resolver.openInputStream(uri)?.use { input -> BitmapFactory.decodeStream(input, null, opts) }
-                ?: return null
+            // サイズ計測モード(inJustDecodeBounds=true)では decodeStream は常に null を返すが、
+            // ここでストリームを正常に開いて処理できたかどうかが重要。
+            val headerOk = resolver.openInputStream(uri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, opts)
+                true
+            } ?: false
+
+            if (!headerOk || opts.outWidth <= 0 || opts.outHeight <= 0) return null
+
             val originalWidth = opts.outWidth
             val originalHeight = opts.outHeight
             opts.inSampleSize = calculateInSampleSize(opts, reqWidth, reqHeight)
             opts.inJustDecodeBounds = false
-            val bitmap = resolver.openInputStream(uri)?.use { input2 -> BitmapFactory.decodeStream(input2, null, opts) }
-                ?: return null
+
+            val bitmap = resolver.openInputStream(uri)?.use { input2 ->
+                BitmapFactory.decodeStream(input2, null, opts)
+            } ?: return null
+
             Triple(bitmap, originalWidth, originalHeight)
         } catch (e: Exception) {
             null
@@ -169,17 +179,19 @@ object PerceptualHash {
         reqHeight: Int
     ): Bitmap? {
         return try {
-            resolver.openInputStream(uri)?.use { input ->
-                val opts = BitmapFactory.Options().apply {
-                    inJustDecodeBounds = true
-                }
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            val headerOk = resolver.openInputStream(uri)?.use { input ->
                 BitmapFactory.decodeStream(input, null, opts)
-                opts.inSampleSize = calculateInSampleSize(opts, reqWidth, reqHeight)
-                opts.inJustDecodeBounds = false
+                true
+            } ?: false
 
-                resolver.openInputStream(uri)?.use { input2 ->
-                    BitmapFactory.decodeStream(input2, null, opts)
-                }
+            if (!headerOk) return null
+
+            opts.inSampleSize = calculateInSampleSize(opts, reqWidth, reqHeight)
+            opts.inJustDecodeBounds = false
+
+            resolver.openInputStream(uri)?.use { input2 ->
+                BitmapFactory.decodeStream(input2, null, opts)
             }
         } catch (e: Exception) {
             null

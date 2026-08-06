@@ -545,12 +545,12 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     fun clearSelection() {
-        _uiState.update { it.copy(selectionMode = false, selectedIds = emptySet()) }
+        _uiState.update { it.copy(selectionMode = false, selectedIds = emptySet(), currentJumpIndex = null) }
         jumpCursorIndex = -1
     }
 
     /**
-     * 「選択へジャンプ」ボタン。押すたびに、今の一覧表示順(entries)の中で選択されている画像を
+     * 「選択へ」ボタン。押すたびに、今の一覧表示順(entries)の中で選択されている画像を
      * 先頭から順に巡回する(テキスト検索の「次を検索」と同じ考え方)。末尾まで行くと先頭に戻る。
      */
     fun jumpToNextSelected() {
@@ -559,10 +559,29 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         val entries = state.entries
         val matchIndices = entries.indices.filter { entries[it].id in state.selectedIds }
         if (matchIndices.isEmpty()) return
-        val currentPos = matchIndices.indexOf(jumpCursorIndex)
-        val nextPos = (currentPos + 1) % matchIndices.size
-        jumpCursorIndex = matchIndices[nextPos]
+        
+        val currentMatchPos = matchIndices.indexOf(jumpCursorIndex)
+        val nextMatchPos = (currentMatchPos + 1) % matchIndices.size
+        
+        jumpCursorIndex = matchIndices[nextMatchPos]
+        _uiState.update { it.copy(currentJumpIndex = nextMatchPos + 1) }
         requestScroll(jumpCursorIndex)
+    }
+
+    /**
+     * 「選択へ」ボタンの長押し。選択されている画像のうち、
+     * 一覧の表示順で一番最初にあるものへジャンプする。
+     */
+    fun jumpToFirstSelected() {
+        val state = _uiState.value
+        if (state.selectedIds.isEmpty()) return
+        val entries = state.entries
+        val firstMatchIndex = entries.indexOfFirst { it.id in state.selectedIds }
+        if (firstMatchIndex >= 0) {
+            jumpCursorIndex = firstMatchIndex
+            _uiState.update { it.copy(currentJumpIndex = 1) }
+            requestScroll(firstMatchIndex)
+        }
     }
 
     private fun selectedImages(): List<ImageItem> {

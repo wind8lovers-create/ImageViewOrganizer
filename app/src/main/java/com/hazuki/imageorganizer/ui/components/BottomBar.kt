@@ -1,5 +1,7 @@
 package com.hazuki.imageorganizer.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -43,6 +45,8 @@ fun OrganizerBottomBar(
     onDeleteClick: () -> Unit,
     onRenameSelectedClick: () -> Unit,
     onJumpToSelectedClick: () -> Unit,
+    onJumpToSelectedLongClick: () -> Unit = {},
+    currentJumpIndex: Int? = null,
     onClearSelectionClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -65,8 +69,15 @@ fun OrganizerBottomBar(
                 BottomBarAction(Icons.Filled.FolderZip, "ZIP化", onZipClick, enabled = actionsEnabled)
                 BottomBarAction(Icons.Filled.Delete, "削除", onDeleteClick, enabled = actionsEnabled)
                 BottomBarAction(Icons.Filled.DriveFileRenameOutline, "リネーム", onRenameSelectedClick, enabled = actionsEnabled)
-                // テキスト検索の「次を検索」のように、押すたびに選択中の画像の位置を順番に巡回する
-                BottomBarAction(Icons.Filled.CenterFocusStrong, "選択へ", onJumpToSelectedClick)
+                // テキスト検索の「次を検索」のように、押すたびに選択中の画像の位置を順番に巡回する。
+                // 長押しで先頭に戻る機能を追加。
+                val jumpLabel = if (currentJumpIndex != null) "選択へ(${currentJumpIndex})" else "選択へ"
+                BottomBarAction(
+                    icon = Icons.Filled.CenterFocusStrong,
+                    label = jumpLabel,
+                    onClick = onJumpToSelectedClick,
+                    onLongClick = onJumpToSelectedLongClick
+                )
                 BottomBarAction(Icons.Filled.Close, "解除(${selectedCount})", onClearSelectionClick)
             }
         } else {
@@ -88,26 +99,34 @@ fun OrganizerBottomBar(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun BottomBarAction(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     enabled: Boolean = true
 ) {
     val tint = if (enabled) FujiPrimaryDark else DisabledContent
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(horizontal = 2.dp)
+        modifier = Modifier
+            .padding(horizontal = 2.dp)
+            .combinedClickable(
+                enabled = enabled,
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .padding(8.dp) // タップ範囲を確保
     ) {
-        IconButton(onClick = onClick, enabled = enabled) {
-            Icon(icon, contentDescription = label, tint = tint)
-        }
+        Icon(icon, contentDescription = label, tint = tint)
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
             color = tint,
-            maxLines = 1
+            maxLines = 1,
+            modifier = Modifier.padding(start = 4.dp)
         )
     }
 }

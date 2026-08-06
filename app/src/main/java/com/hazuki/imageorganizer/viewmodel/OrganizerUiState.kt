@@ -34,6 +34,7 @@ data class OrganizerUiState(
 
     val selectionMode: Boolean = false,
     val selectedIds: Set<Long> = emptySet(),
+    val currentJumpIndex: Int? = null, // 選択画像の中での現在の巡回位置(1〜N)。未ジャンプ時はnull。
 
     val fullscreenIndex: Int? = null, // nullでない場合、その位置の画像を全画面表示
 

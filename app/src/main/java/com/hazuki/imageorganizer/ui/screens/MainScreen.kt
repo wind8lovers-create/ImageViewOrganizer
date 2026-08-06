@@ -190,6 +190,8 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     onDeleteClick = { viewModel.deleteSelected(gridState.firstVisibleItemIndex) },
                     onRenameSelectedClick = { viewModel.renameSelectedSequentially(gridState.firstVisibleItemIndex) },
                     onJumpToSelectedClick = { viewModel.jumpToNextSelected() },
+                    onJumpToSelectedLongClick = { viewModel.jumpToFirstSelected() },
+                    currentJumpIndex = state.currentJumpIndex,
                     onClearSelectionClick = { viewModel.clearSelection() }
                 )
             }

@@ -39,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import com.hazuki.imageorganizer.data.RecentEntry
 import com.hazuki.imageorganizer.data.RecentEntryType
@@ -122,6 +123,13 @@ fun OrganizerTopBar(
     onToggleThumbnailSize: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // --- 画面幅に応じたスライダー幅の決定 ---
+    // 現在の画面情報を取得します
+    val configuration = LocalConfiguration.current
+    // 画面の横幅が 600dp 以上ならタブレットとみなし、260dp にします。
+    // それ以外（スマホなど）は 120dp に設定します。
+    val sliderWidth = if (configuration.screenWidthDp >= 600) 260.dp else 120.dp
+
     Surface(
         // ステータスバー分の余白を確保(Edge-to-Edge表示でも重ならないように)
         modifier = modifier.fillMaxWidth().statusBarsPadding(),
@@ -268,7 +276,8 @@ fun OrganizerTopBar(
                         value = saturationTolerance,
                         onValueChange = onSaturationChange,
                         valueRange = 0f..0.35f,
-                        modifier = Modifier.width(120.dp).padding(horizontal = 4.dp),
+                        // 固定の 120.dp から、画面幅で決まる sliderWidth に変更しました
+                        modifier = Modifier.width(sliderWidth).padding(horizontal = 4.dp),
                         colors = SliderDefaults.colors(thumbColor = FujiPrimaryDark, activeTrackColor = FujiPrimary)
                     )
                     Text(
@@ -287,7 +296,8 @@ fun OrganizerTopBar(
                         value = brightnessTolerance,
                         onValueChange = onBrightnessChange,
                         valueRange = 0f..0.35f,
-                        modifier = Modifier.width(120.dp).padding(horizontal = 4.dp),
+                        // 固定の 120.dp から、画面幅で決まる sliderWidth に変更しました
+                        modifier = Modifier.width(sliderWidth).padding(horizontal = 4.dp),
                         colors = SliderDefaults.colors(thumbColor = FujiPrimaryDark, activeTrackColor = FujiPrimary)
                     )
                     Text(
@@ -336,7 +346,8 @@ fun OrganizerTopBar(
                         value = mapThresholdToSlider(styleMatchThreshold),
                         onValueChange = { onStyleMatchThresholdChange(mapSliderToThreshold(it)) },
                         valueRange = 0f..1f,
-                        modifier = Modifier.width(120.dp).padding(horizontal = 4.dp),
+                        // 固定の 120.dp から、画面幅で決まる sliderWidth に変更しました
+                        modifier = Modifier.width(sliderWidth).padding(horizontal = 4.dp),
                         colors = SliderDefaults.colors(thumbColor = FujiPrimaryDark, activeTrackColor = FujiPrimary)
                     )
                     Text(

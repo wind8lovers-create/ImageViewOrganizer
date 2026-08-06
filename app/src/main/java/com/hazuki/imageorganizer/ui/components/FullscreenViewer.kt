@@ -21,12 +21,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.hazuki.imageorganizer.data.DisplayEntry
+import com.hazuki.imageorganizer.data.ImageItem
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FullscreenViewer(
-    entries: List<DisplayEntry>,
+    entries: List<ImageItem>,
     startIndex: Int,
     onDismiss: () -> Unit
 ) {
@@ -45,10 +45,7 @@ fun FullscreenViewer(
             state = pagerState,
             modifier = Modifier.fillMaxSize()
         ) { page ->
-            val image = when (val e = entries[page]) {
-                is DisplayEntry.Single -> e.image
-                is DisplayEntry.Grouped -> e.image
-            }
+            val image = entries[page]
             AsyncImage(
                 model = image.uri,
                 contentDescription = image.displayName,

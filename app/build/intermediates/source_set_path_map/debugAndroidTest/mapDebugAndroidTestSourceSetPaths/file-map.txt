@@ -1,0 +1,4 @@
+com.hazuki.imageorganizer.test.app-androidTest-0 C:\Users\Takafumi Kizuki\AndroidStudioProjects\ImageViewOrganizer\app\build\generated\res\resValues\androidTest\debug
+com.hazuki.imageorganizer.test.app-mergeDebugAndroidTestResources-1 C:\Users\Takafumi Kizuki\AndroidStudioProjects\ImageViewOrganizer\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\merged.dir
+com.hazuki.imageorganizer.test.app-mergeDebugAndroidTestResources-2 C:\Users\Takafumi Kizuki\AndroidStudioProjects\ImageViewOrganizer\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\stripped.dir
+com.hazuki.imageorganizer.test.app-debugAndroidTest-3 C:\Users\Takafumi Kizuki\AndroidStudioProjects\ImageViewOrganizer\app\build\intermediates\merged_res\debugAndroidTest\mergeDebugAndroidTestResources

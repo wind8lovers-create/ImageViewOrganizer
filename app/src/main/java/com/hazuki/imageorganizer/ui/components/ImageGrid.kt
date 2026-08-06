@@ -16,7 +16,6 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -30,8 +29,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -41,26 +38,21 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import com.hazuki.imageorganizer.data.DisplayEntry
+import com.hazuki.imageorganizer.data.ImageItem
 import com.hazuki.imageorganizer.data.ThumbnailSize
 import com.hazuki.imageorganizer.ui.theme.FujiOutline
 import com.hazuki.imageorganizer.ui.theme.FujiPrimaryDark
-import com.hazuki.imageorganizer.ui.theme.GroupOutlineAmber
-import com.hazuki.imageorganizer.ui.theme.GroupOutlineYellow
 import com.hazuki.imageorganizer.ui.theme.SelectionOverlay
 import kotlinx.coroutines.launch
 
-private const val OUTLINE_WIDTH_DP = 3
-
 @Composable
 fun ImageGrid(
-    entries: List<DisplayEntry>,
+    entries: List<ImageItem>,
     thumbnailSize: ThumbnailSize,
     selectedIds: Set<Long>,
     selectionMode: Boolean,
     onTap: (Int) -> Unit,
     onLongPress: (Int) -> Unit,
-    onGroupCheckboxTap: (groupId: Int) -> Unit,
     modifier: Modifier = Modifier,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState = rememberLazyGridState()
 ) {
@@ -74,28 +66,15 @@ fun ImageGrid(
             modifier = Modifier.fillMaxSize(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp)
         ) {
-            items(count = entries.size, key = { idx ->
-                when (val e = entries[idx]) {
-                    is DisplayEntry.Single -> e.image.id
-                    is DisplayEntry.Grouped -> e.image.id
-                }
-            }) { index ->
-                // 列数はGridCells.Adaptiveのため実行時に厳密取得できないので、
-                // LazyGridStateのlayoutInfoから直近のスパン情報を概算する。
-                val columns = state.layoutInfo.visibleItemsInfo
-                    .maxOfOrNull { it.column ?: 0 }
-                    ?.plus(1)?.takeIf { it > 0 } ?: 1
-
+            items(count = entries.size, key = { idx -> entries[idx].id }) { index ->
                 GridCellContent(
                     entries = entries,
                     index = index,
-                    columns = columns,
                     thumbnailSize = thumbnailSize,
                     selectedIds = selectedIds,
                     selectionMode = selectionMode,
                     onTap = onTap,
-                    onLongPress = onLongPress,
-                    onGroupCheckboxTap = onGroupCheckboxTap
+                    onLongPress = onLongPress
                 )
             }
         }
@@ -183,60 +162,24 @@ private fun ScrollPositionBar(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GridCellContent(
-    entries: List<DisplayEntry>,
+    entries: List<ImageItem>,
     index: Int,
-    columns: Int,
     thumbnailSize: ThumbnailSize,
     selectedIds: Set<Long>,
     selectionMode: Boolean,
     onTap: (Int) -> Unit,
-    onLongPress: (Int) -> Unit,
-    onGroupCheckboxTap: (groupId: Int) -> Unit
+    onLongPress: (Int) -> Unit
 ) {
-    val entry = entries[index]
-    val image = when (entry) {
-        is DisplayEntry.Single -> entry.image
-        is DisplayEntry.Grouped -> entry.image
-    }
+    val image = entries[index]
     val isSelected = image.id in selectedIds
-
-    val groupId = (entry as? DisplayEntry.Grouped)?.groupId
-    val groupColor = (entry as? DisplayEntry.Grouped)?.let {
-        if (it.colorIndex == 0) GroupOutlineYellow else GroupOutlineAmber
-    }
-
-    fun groupIdAt(i: Int): Int? {
-        if (i < 0 || i >= entries.size) return null
-        return (entries[i] as? DisplayEntry.Grouped)?.groupId
-    }
-
-    val row = index / columns
-    val col = index % columns
-
-    val drawTop = groupId != null && groupIdAt(index - columns) != groupId
-    val drawBottom = groupId != null && groupIdAt(index + columns) != groupId
-    val drawLeft = groupId != null && (col == 0 || groupIdAt(index - 1) != groupId)
-    val drawRight = groupId != null && (col == columns - 1 || groupIdAt(index + 1) != groupId)
 
     Box(
         modifier = Modifier
             .padding(1.dp)
             .aspectRatio(1f)
             .combinedClickable(
-                onClick = {
-                    if (selectionMode) onTap(index) else onTap(index)
-                },
+                onClick = { onTap(index) },
                 onLongClick = { onLongPress(index) }
-            )
-            .then(
-                if (groupColor != null) Modifier.drawBehind {
-                    val strokeWidthPx = OUTLINE_WIDTH_DP.dp.toPx()
-                    val half = strokeWidthPx / 2
-                    if (drawTop) drawLine(groupColor, Offset(0f, half), Offset(size.width, half), strokeWidthPx)
-                    if (drawBottom) drawLine(groupColor, Offset(0f, size.height - half), Offset(size.width, size.height - half), strokeWidthPx)
-                    if (drawLeft) drawLine(groupColor, Offset(half, 0f), Offset(half, size.height), strokeWidthPx)
-                    if (drawRight) drawLine(groupColor, Offset(size.width - half, 0f), Offset(size.width - half, size.height), strokeWidthPx)
-                } else Modifier
             )
     ) {
         val context = LocalContext.current
@@ -268,21 +211,6 @@ private fun GridCellContent(
                     .align(Alignment.TopEnd)
                     .padding(2.dp)
                     .size(18.dp)
-            )
-        }
-
-        // グループ外枠の左上に、グループ全体選択用の小さなチェックボックスを1回だけ表示
-        if (groupId != null && drawTop && drawLeft) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(2.dp)
-                    .size(16.dp)
-                    .background(groupColor ?: Color.Yellow)
-                    .combinedClickable(
-                        onClick = { onGroupCheckboxTap(groupId) },
-                        onLongClick = { onGroupCheckboxTap(groupId) }
-                    )
             )
         }
     }

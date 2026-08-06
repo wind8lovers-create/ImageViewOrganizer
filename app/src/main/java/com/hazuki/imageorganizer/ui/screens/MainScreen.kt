@@ -31,7 +31,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hazuki.imageorganizer.data.ThumbnailSize
 import com.hazuki.imageorganizer.ui.components.FullscreenViewer
-import com.hazuki.imageorganizer.ui.components.ExtensionBottomSheet
 import com.hazuki.imageorganizer.ui.components.ImageGrid
 import com.hazuki.imageorganizer.ui.components.OrganizerBottomBar
 import com.hazuki.imageorganizer.ui.components.OrganizerTopBar
@@ -47,7 +46,6 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val sheetState = rememberModalBottomSheetState()
-    val extensionSheetState = rememberModalBottomSheetState()
 
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -102,10 +100,10 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
         }
     }
 
-    // 大量枚数の読み込み中・グループ化(ハッシュ計算)中・スライドショー中は時間がかかる/連続視聴中なため、画面が消灯しないようにする
+    // 大量枚数の読み込み中・拡張選択の絞り込み計算中・スライドショー中は時間がかかる/連続視聴中なため、画面が消灯しないようにする
     val view = LocalView.current
-    DisposableEffect(state.isStreaming, state.isGrouping, state.slideshowActive) {
-        view.keepScreenOn = state.isStreaming || state.isGrouping || state.slideshowActive
+    DisposableEffect(state.isStreaming, state.isComparing, state.slideshowActive) {
+        view.keepScreenOn = state.isStreaming || state.isComparing || state.slideshowActive
         onDispose { view.keepScreenOn = false }
     }
 
@@ -146,21 +144,27 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     folderTotalCount = state.folderTotalCount,
                     isLoading = state.isLoading,
                     isStreaming = state.isStreaming,
-                    isGrouping = state.isGrouping,
+                    isComparing = state.isComparing,
                     onOpenFolder = { folderPickerLauncher.launch(null) },
                     onOpenZip = { zipPickerLauncher.launch(arrayOf("application/zip")) },
                     recentEntries = state.recentEntries,
                     onSelectRecent = { entry -> viewModel.openRecentEntry(entry) },
                     onSelectDefaultFolder = { viewModel.loadDocumentsFolder() },
-                    sameImageOnly = state.sameImageOnly,
-                    onToggleSameImageOnly = { viewModel.toggleSameImageOnly() },
-                    groupThreshold = state.groupThreshold,
-                    onThresholdChange = { viewModel.setGroupThreshold(it) },
-                    colorPreset = state.colorPreset,
-                    onColorPresetSelected = { viewModel.setColorPreset(it) },
-                    groupCount = state.groupCount,
-                    hideSinglesWhenGrouped = state.hideSinglesWhenGrouped,
-                    onToggleHideSingles = { viewModel.toggleHideSingles() },
+                    extensionSelectionActive = state.extensionSelectionActive,
+                    onToggleExtensionSelection = { viewModel.toggleExtensionSelection() },
+                    matchedCount = state.matchedCount,
+                    saturationTolerance = state.saturationTolerance,
+                    onSaturationChange = { viewModel.setSaturationTolerance(it) },
+                    brightnessTolerance = state.brightnessTolerance,
+                    onBrightnessChange = { viewModel.setBrightnessTolerance(it) },
+                    colorPresetStep = state.colorPresetStep,
+                    onCyclePreset = { viewModel.cyclePresetStep() },
+                    hashMatchEnabled = state.hashMatchEnabled,
+                    onToggleHashMatch = { viewModel.toggleHashMatch(it) },
+                    aspectRatioOnly = state.aspectRatioOnly,
+                    onToggleAspectRatioOnly = { viewModel.toggleAspectRatioOnly(it) },
+                    styleMatchThreshold = state.styleMatchThreshold,
+                    onStyleMatchThresholdChange = { viewModel.setStyleMatchThreshold(it) },
                     slideshowActive = state.slideshowActive,
                     onToggleSlideshow = { viewModel.toggleSlideshow(gridState.firstVisibleItemIndex) },
                     thumbnailSize = state.thumbnailSize,
@@ -175,17 +179,17 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                 OrganizerBottomBar(
                     selectionMode = state.selectionMode,
                     selectedCount = state.selectedIds.size,
-                    sortEnabled = !state.sameImageOnly,
+                    sortEnabled = true,
                     actionsEnabled = !state.isLoading && !state.isStreaming,
                     currentSortLabel = state.sortOption.label,
                     onSortClick = { viewModel.toggleSortSheet(true) },
                     onSelectClick = { /* 選択モードは長押しで開始する仕様のため、案内のみ */ },
                     onRenameClick = { /* 通常時のリネームは「選択」してから使う操作のため未選択時は無効表示でも良い */ },
-                    onExtensionClick = { viewModel.openExtensionPanel() },
                     onMoveClick = { viewModel.moveSelectedToMovedFolder(gridState.firstVisibleItemIndex) },
                     onZipClick = { viewModel.zipSelected() },
                     onDeleteClick = { viewModel.deleteSelected(gridState.firstVisibleItemIndex) },
                     onRenameSelectedClick = { viewModel.renameSelectedSequentially(gridState.firstVisibleItemIndex) },
+                    onJumpToSelectedClick = { viewModel.jumpToNextSelected() },
                     onClearSelectionClick = { viewModel.clearSelection() }
                 )
             }
@@ -207,18 +211,17 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                             selectionMode = state.selectionMode,
                             gridState = gridState,
                             onTap = { index ->
+                                val id = state.entries.getOrNull(index)?.id
                                 if (state.selectionMode) {
-                                    val id = entryImageId(state.entries, index)
                                     if (id != null) viewModel.toggleSelected(id)
                                 } else {
                                     viewModel.openFullscreen(index)
                                 }
                             },
                             onLongPress = { index ->
-                                val id = entryImageId(state.entries, index)
-                                if (id != null) viewModel.startSelection(id)
+                                val id = state.entries.getOrNull(index)?.id
+                                if (id != null) viewModel.handleLongPress(id)
                             },
-                            onGroupCheckboxTap = { groupId -> viewModel.selectGroup(groupId) },
                             modifier = Modifier.fillMaxSize().padding(padding)
                         )
                     }
@@ -232,28 +235,6 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                 sheetState = sheetState,
                 onSelect = { viewModel.setSortOption(it) },
                 onDismiss = { viewModel.toggleSortSheet(false) }
-            )
-        }
-
-        if (state.extensionSheetVisible) {
-            val originLabel = state.entries.firstNotNullOfOrNull { entry ->
-                val img = when (entry) {
-                    is com.hazuki.imageorganizer.data.DisplayEntry.Single -> entry.image
-                    is com.hazuki.imageorganizer.data.DisplayEntry.Grouped -> entry.image
-                }
-                if (img.id == state.originImageId) img.displayName else null
-            } ?: ""
-            ExtensionBottomSheet(
-                sheetState = extensionSheetState,
-                originLabel = originLabel,
-                matchedCount = state.entries.size,
-                isCalculating = state.isGrouping,
-                aspectRatioOnly = state.aspectRatioOnly,
-                onToggleAspectRatioOnly = { viewModel.toggleAspectRatioOnly(it) },
-                styleMatchThreshold = state.styleMatchThreshold,
-                onStyleMatchThresholdChange = { viewModel.setStyleMatchThreshold(it) },
-                onDisableFilter = { viewModel.disableExtensionFilter() },
-                onDismiss = { viewModel.closeExtensionSheet() }
             )
         }
 
@@ -275,14 +256,6 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                 onStop = { viewModel.toggleSlideshow(gridState.firstVisibleItemIndex) }
             )
         }
-    }
-}
-
-private fun entryImageId(entries: List<com.hazuki.imageorganizer.data.DisplayEntry>, index: Int): Long? {
-    if (index !in entries.indices) return null
-    return when (val e = entries[index]) {
-        is com.hazuki.imageorganizer.data.DisplayEntry.Single -> e.image.id
-        is com.hazuki.imageorganizer.data.DisplayEntry.Grouped -> e.image.id
     }
 }
 
@@ -316,4 +289,3 @@ private fun EmptyFolderMessage(
         }
     }
 }
-

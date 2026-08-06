@@ -13,7 +13,7 @@ import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.CheckBox
-import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -38,11 +38,11 @@ fun OrganizerBottomBar(
     onSortClick: () -> Unit,
     onSelectClick: () -> Unit,
     onRenameClick: () -> Unit,
-    onExtensionClick: () -> Unit,
     onMoveClick: () -> Unit,
     onZipClick: () -> Unit,
     onDeleteClick: () -> Unit,
     onRenameSelectedClick: () -> Unit,
+    onJumpToSelectedClick: () -> Unit,
     onClearSelectionClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -65,8 +65,8 @@ fun OrganizerBottomBar(
                 BottomBarAction(Icons.Filled.FolderZip, "ZIP化", onZipClick, enabled = actionsEnabled)
                 BottomBarAction(Icons.Filled.Delete, "削除", onDeleteClick, enabled = actionsEnabled)
                 BottomBarAction(Icons.Filled.DriveFileRenameOutline, "リネーム", onRenameSelectedClick, enabled = actionsEnabled)
-                // 拡張機能(スタイル一致度検索)は選択中の画像を基準にするため、選択モード側に配置する
-                BottomBarAction(Icons.Filled.Extension, "拡張", onExtensionClick, enabled = actionsEnabled)
+                // テキスト検索の「次を検索」のように、押すたびに選択中の画像の位置を順番に巡回する
+                BottomBarAction(Icons.Filled.CenterFocusStrong, "選択へ", onJumpToSelectedClick)
                 BottomBarAction(Icons.Filled.Close, "解除(${selectedCount})", onClearSelectionClick)
             }
         } else {

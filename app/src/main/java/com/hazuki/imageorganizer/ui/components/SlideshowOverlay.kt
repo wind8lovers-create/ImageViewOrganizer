@@ -15,7 +15,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.hazuki.imageorganizer.data.DisplayEntry
+import com.hazuki.imageorganizer.data.ImageItem
 import com.hazuki.imageorganizer.viewmodel.SlideshowInterval
 
 /**
@@ -24,7 +24,7 @@ import com.hazuki.imageorganizer.viewmodel.SlideshowInterval
  */
 @Composable
 fun SlideshowOverlay(
-    entries: List<DisplayEntry>,
+    entries: List<ImageItem>,
     currentIndex: Int,
     interval: SlideshowInterval,
     onTapAdvance: () -> Unit,
@@ -32,10 +32,7 @@ fun SlideshowOverlay(
     onStop: () -> Unit
 ) {
     if (entries.isEmpty()) return
-    val image = when (val e = entries[currentIndex % entries.size]) {
-        is DisplayEntry.Single -> e.image
-        is DisplayEntry.Grouped -> e.image
-    }
+    val image = entries[currentIndex % entries.size]
 
     Box(
         modifier = Modifier

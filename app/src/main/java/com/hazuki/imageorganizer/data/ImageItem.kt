@@ -64,9 +64,3 @@ enum class ThumbnailSize(val dp: Int) {
     SMALL(100),
     LARGE(150)
 }
-
-/** 画像1枚、またはグループとしてまとめられた表示単位 */
-sealed class DisplayEntry {
-    data class Single(val image: ImageItem) : DisplayEntry()
-    data class Grouped(val image: ImageItem, val groupId: Int, val colorIndex: Int) : DisplayEntry()
-}

@@ -38,11 +38,38 @@ fun ExtensionBottomSheet(
     isCalculating: Boolean,
     aspectRatioOnly: Boolean,
     onToggleAspectRatioOnly: (Boolean) -> Unit,
-    styleMatchThreshold: Int,
-    onStyleMatchThresholdChange: (Int) -> Unit,
+    styleMatchThreshold: Float,
+    onStyleMatchThresholdChange: (Float) -> Unit,
     onDisableFilter: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    /**
+     * スライダーの操作位置(0.0〜1.0)を、計算用の閾値(0.0〜100.0)に非線形にマッピングする。
+     * 加速度的な変化(最初は速く、後半はゆっくり)を実現するための折れ線変換。
+     */
+    fun mapSliderToThreshold(sliderValue: Float): Float {
+        return when {
+            sliderValue <= 0f -> 0f
+            sliderValue <= 0.1f -> lerp(0f, 50f, sliderValue / 0.1f)
+            sliderValue <= 0.2f -> lerp(50f, 60f, (sliderValue - 0.1f) / 0.1f)
+            sliderValue <= 0.5f -> lerp(60f, 70f, (sliderValue - 0.2f) / 0.3f)
+            sliderValue <= 0.6f -> lerp(70f, 80f, (sliderValue - 0.5f) / 0.1f)
+            else -> lerp(80f, 100f, (sliderValue - 0.6f) / 0.4f)
+        }
+    }
+
+    /** mapSliderToThreshold の逆変換。現在の閾値からスライダーのノブ位置を求める。 */
+    fun mapThresholdToSlider(threshold: Float): Float {
+        return when {
+            threshold <= 0f -> 0f
+            threshold <= 50f -> (threshold / 50f) * 0.1f
+            threshold <= 60f -> 0.1f + ((threshold - 50f) / 10f) * 0.1f
+            threshold <= 70f -> 0.2f + ((threshold - 60f) / 10f) * 0.3f
+            threshold <= 80f -> 0.5f + ((threshold - 70f) / 10f) * 0.1f
+            else -> 0.6f + ((threshold - 80f) / 20f) * 0.4f
+        }
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -109,9 +136,9 @@ fun ExtensionBottomSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Slider(
-                    value = styleMatchThreshold.toFloat(),
-                    onValueChange = { onStyleMatchThresholdChange(it.toInt()) },
-                    valueRange = 0f..100f,
+                    value = mapThresholdToSlider(styleMatchThreshold),
+                    onValueChange = { onStyleMatchThresholdChange(mapSliderToThreshold(it)) },
+                    valueRange = 0f..1f,
                     modifier = Modifier.weight(1f),
                     colors = SliderDefaults.colors(
                         thumbColor = FujiPrimaryDark,
@@ -119,7 +146,8 @@ fun ExtensionBottomSheet(
                     )
                 )
                 Text(
-                    text = "${styleMatchThreshold}%",
+                    // 小数点第1位まで表示(0.5刻み等の微調整を視認しやすくするため)
+                    text = java.lang.String.format(java.util.Locale.US, "%.1f%%", styleMatchThreshold),
                     color = FujiPrimaryDark,
                     modifier = Modifier.padding(start = 8.dp)
                 )
@@ -132,4 +160,9 @@ fun ExtensionBottomSheet(
             }
         }
     }
+}
+
+/** 線形補間(Linear Interpolation) */
+private fun lerp(start: Float, stop: Float, fraction: Float): Float {
+    return start + (stop - start) * fraction
 }

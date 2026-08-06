@@ -5,7 +5,6 @@ import android.content.IntentSender
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.hazuki.imageorganizer.data.DisplayEntry
 import com.hazuki.imageorganizer.data.ImageItem
 import com.hazuki.imageorganizer.data.ImageRepository
 import com.hazuki.imageorganizer.data.LoadProgress
@@ -17,7 +16,7 @@ import com.hazuki.imageorganizer.data.ThumbnailSize
 import com.hazuki.imageorganizer.util.ColorGroupPreset
 import com.hazuki.imageorganizer.util.ColorPalette
 import com.hazuki.imageorganizer.util.FileOperations
-import com.hazuki.imageorganizer.util.ImageGrouping
+import com.hazuki.imageorganizer.util.PerceptualHash
 import com.hazuki.imageorganizer.util.RenameUtil
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,12 +41,13 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     private val _uiState = MutableStateFlow(OrganizerUiState())
     val uiState: StateFlow<OrganizerUiState> = _uiState.asStateFlow()
 
-    // ソート済みの生画像リスト(グループ化前の状態を保持しておく)
+    // ソート済みの生画像リスト(絞り込み前の状態を保持しておく)
     private var allImages: List<ImageItem> = emptyList()
 
-    private var groupingJob: Job? = null
+    private var comparingJob: Job? = null
     private var slideshowJob: Job? = null
     private var thresholdDebounceJob: Job? = null
+    private var jumpCursorIndex: Int = -1 // 「選択へジャンプ」の巡回位置(entries上のインデックス)
 
     private var pendingAction: PendingMediaAction? = null
     private val _intentSenderRequest = MutableStateFlow<IntentSender?>(null)
@@ -138,7 +138,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             repository.loadDefaultFolderStreaming()
                 .onCompletion {
                     _uiState.update { s -> s.copy(isStreaming = false) }
-                    applySortAndGroup()
+                    applyDisplayList()
                     requestScroll(scrollTarget)
                 }
                 .collect { progress -> onBatchReceived(progress) }
@@ -159,7 +159,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 repository.loadFromTreeStreaming(treeUri)
                     .onCompletion {
                         _uiState.update { s -> s.copy(isStreaming = false) }
-                        applySortAndGroup()
+                        applyDisplayList()
                         requestScroll(scrollTarget)
                     }
                     .collect { progress -> onBatchReceived(progress) }
@@ -187,7 +187,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 repository.loadFromLocalDirectoryStreaming(dir)
                     .onCompletion {
                         _uiState.update { s -> s.copy(isStreaming = false) }
-                        applySortAndGroup()
+                        applyDisplayList()
                         requestScroll(scrollTarget)
                     }
                     .collect { progress -> onBatchReceived(progress) }
@@ -212,7 +212,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                     repository.loadFromLocalDirectoryStreaming(zipDir)
                         .onCompletion {
                             _uiState.update { s -> s.copy(isStreaming = false) }
-                            applySortAndGroup()
+                            applyDisplayList()
                             requestScroll(scrollTarget)
                         }
                         .collect { progress -> onBatchReceived(progress) }
@@ -230,9 +230,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * ストリーミング中の各バッチ受信時に呼ぶ。読み込み中は「読み込み済み/総数」の表示更新だけ行い、
-     * 重いグループ化(ハッシュ計算)は走らせない(読み込み完了後にonCompletionで1回だけ実行する)。
-     * これにより、以前は「バッチが来るたびにグループ化を中断→やり直し」となっていた問題を解消し、
-     * 大量枚数のフォルダでも「グループ: 0件」のまま止まって見える現象を防ぐ。
+     * 重い処理(ハッシュ・代表色計算)は走らせない(読み込み完了後にonCompletionで1回だけ実行する)。
      */
     private fun onBatchReceived(progress: LoadProgress) {
         allImages = progress.images
@@ -243,15 +241,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 isLoading = false
             )
         }
-        // 読み込み中は軽量なシングル表示のみ更新する(entriesを空のままにして
+        // 読み込み中は軽量な一覧表示のみ更新する(entriesを空のままにして
         // 「画像が見つかりませんでした」の誤表示が出ないようにするため)。
-        // 重いグループ化(ハッシュ計算)は読み込み完了(onCompletion)まで待ってから1回だけ実行する。
         val sorted = sortedImages(_uiState.value.sortOption)
-        _uiState.update { it.copy(entries = sorted.map { img -> DisplayEntry.Single(img) }) }
+        _uiState.update { it.copy(entries = sorted) }
     }
 
     // ------------------------------------------------------------------
-    // ソート / グループ化
+    // ソート / 一覧表示
     // ------------------------------------------------------------------
 
     private fun sortedImages(sortOption: SortOption): List<ImageItem> {
@@ -269,79 +266,23 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    private fun applySortAndGroup() {
+    /**
+     * 一覧の中身を決める中心の処理。
+     * ・拡張選択ON: applyExtensionSelectionFilter() に任せる(基準画像との比較で絞り込み)
+     * ・拡張選択OFF: 通常のソート表示のみ
+     */
+    private fun applyDisplayList() {
         reconcileSelection()
         val state = _uiState.value
         val sorted = sortedImages(state.sortOption)
 
-        if (state.extensionActive) {
-            applyExtensionFilter(sorted, state)
+        if (state.extensionSelectionActive) {
+            applyExtensionSelectionFilter(sorted, state)
             return
         }
 
-        val colorOnlyMode = !state.sameImageOnly && state.colorPreset != null
-
-        if (!state.sameImageOnly && !colorOnlyMode) {
-            // 「同画像のみ表示」OFF かつプリセットも未選択: 通常のソート表示のみ
-            groupingJob?.cancel()
-            _uiState.update { it.copy(entries = sorted.map { img -> DisplayEntry.Single(img) }, isGrouping = false, groupCount = 0) }
-            return
-        }
-
-        // 以下、グループ化が必要なケース:
-        //  ・「同画像のみ表示」ON: ハッシュの近さ(+任意でプリセットの彩度・明度)でグルーピング
-        //  ・「同画像のみ表示」OFF かつプリセット選択中: プリセットの彩度・明度のみでグルーピング(ハッシュ不使用)
-        groupingJob?.cancel()
-        groupingJob = viewModelScope.launch {
-            _uiState.update { it.copy(isGrouping = true) } // 画面消灯防止(ハッシュ計算中も画面がつくようにする)
-            // 彩度・明度は知覚ハッシュと同じ処理(computeHashAndColor)で一緒に計算されるため、
-            // 色味のみのモードでも同じ関数を呼ぶ(ハッシュ自体はこのモードでは使わない)。
-            val hashed = repository.computeHashes(sorted)
-            val preset = _uiState.value.colorPreset
-
-            val groups = if (colorOnlyMode) {
-                val p = preset ?: ColorGroupPreset.B
-                ImageGrouping.groupByColor(
-                    hashed,
-                    saturationTolerance = p.saturationTolerance,
-                    brightnessTolerance = p.brightnessTolerance
-                )
-            } else {
-                ImageGrouping.group(
-                    hashed,
-                    _uiState.value.groupThreshold,
-                    saturationTolerance = preset?.saturationTolerance,
-                    brightnessTolerance = preset?.brightnessTolerance
-                )
-            }
-
-            // 画像id -> groupId の逆引き
-            val imageIdToGroup = mutableMapOf<Long, Int>()
-            groups.forEach { (groupId, items) -> items.forEach { imageIdToGroup[it.id] = groupId } }
-
-            // 重要: グループのメンバーは元のソート順ではバラバラの位置に散らばっているため、
-            // そのままでは各画像が孤立した1枚だけの枠になってしまい、グループ化の効果が見た目に出ない。
-            // ここで、各グループの初出位置にメンバー全員をまとめて並べ替える。
-            val emittedGroups = mutableSetOf<Int>()
-            val reordered = mutableListOf<DisplayEntry>()
-            var colorToggle = 0
-            val hideSingles = _uiState.value.hideSinglesWhenGrouped
-
-            for (img in hashed) {
-                val gid = imageIdToGroup[img.id]
-                if (gid == null) {
-                    if (!hideSingles) reordered += DisplayEntry.Single(img)
-                } else if (gid !in emittedGroups) {
-                    emittedGroups += gid
-                    val members = hashed.filter { imageIdToGroup[it.id] == gid }
-                    members.forEach { m -> reordered += DisplayEntry.Grouped(m, gid, colorToggle) }
-                    colorToggle = 1 - colorToggle
-                }
-                // 既に出力済みのグループのメンバーはここでスキップ(初出時にまとめて出力済みのため)
-            }
-
-            _uiState.update { it.copy(entries = reordered, groupCount = groups.size, isGrouping = false) }
-        }
+        comparingJob?.cancel()
+        _uiState.update { it.copy(entries = sorted, isComparing = false, matchedCount = 0) }
     }
 
     fun setSortOption(option: SortOption) {
@@ -350,55 +291,210 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             // 撮影日ソートの時だけEXIFを読みに行く(他のソートでは不要な重い処理を避ける)
             viewModelScope.launch {
                 allImages = repository.ensureDateTaken(allImages)
-                applySortAndGroup()
+                applyDisplayList()
             }
         } else {
-            applySortAndGroup()
+            applyDisplayList()
         }
     }
 
     fun toggleSortSheet(visible: Boolean) {
-        if (_uiState.value.sameImageOnly) return // ON中はソート無効
         _uiState.update { it.copy(sortSheetVisible = visible) }
-    }
-
-    fun toggleSameImageOnly() {
-        val newValue = !_uiState.value.sameImageOnly
-        _uiState.update { it.copy(sameImageOnly = newValue, sortSheetVisible = false) }
-        applySortAndGroup()
-    }
-
-    fun setGroupThreshold(value: Int) {
-        val clamped = value.coerceIn(ImageGrouping.THRESHOLD_RANGE.first, ImageGrouping.THRESHOLD_RANGE.last)
-        _uiState.update { it.copy(groupThreshold = clamped) }
-        if (_uiState.value.sameImageOnly) {
-            // スライダーのドラッグ中に毎フレーム重い再グループ化が走らないよう、300ms のデバウンスをかける
-            thresholdDebounceJob?.cancel()
-            thresholdDebounceJob = viewModelScope.launch {
-                kotlinx.coroutines.delay(300)
-                applySortAndGroup()
-            }
-        }
-    }
-
-    /** グループに属さない単独画像を隠して、グループのみ表示する(設定の効果を確認しやすくするため) */
-    fun toggleHideSingles() {
-        _uiState.update { it.copy(hideSinglesWhenGrouped = !it.hideSinglesWhenGrouped) }
-        val state = _uiState.value
-        if (state.sameImageOnly || (state.colorPreset != null)) {
-            applySortAndGroup()
-        }
     }
 
     fun setThumbnailSize(size: ThumbnailSize) {
         _uiState.update { it.copy(thumbnailSize = size) }
     }
 
-    /** 彩度・明度プリセット(A/B/C)を選択/解除する。もう一度同じものを押すと解除(彩度・明度は判定に使わない)。
-     *  「同画像のみ表示」がOFFの場合でも、プリセット選択中は彩度・明度のみでグルーピングする。 */
-    fun setColorPreset(preset: ColorGroupPreset) {
-        _uiState.update { it.copy(colorPreset = if (it.colorPreset == preset) null else preset) }
-        applySortAndGroup()
+    // ------------------------------------------------------------------
+    // 拡張選択(基準画像に似た画像を絞り込む)
+    // ------------------------------------------------------------------
+
+    /** ハッシュ判定(ほぼ同一画像)の許容ハミング距離。値が小さいほど厳しい判定になる。 */
+    private val HASH_MATCH_THRESHOLD = 10
+
+    /**
+     * 上部バーの「拡張選択」ボタン。
+     * ・OFF→ON: 選択中の画像を基準(origin)にする。選択が1枚ならその画像自身、
+     *   2枚以上なら(ソート表示上での)最初の画像を基準にする。未選択なら起動しない。
+     * ・ON→OFF: フィルタを解除し、通常の一覧表示に戻す。基準画像(origin)が見える位置までスクロールする。
+     */
+    fun toggleExtensionSelection() {
+        val state = _uiState.value
+        if (state.extensionSelectionActive) {
+            disableExtensionSelection()
+            return
+        }
+        if (state.selectedIds.isEmpty()) {
+            _uiState.update { it.copy(snackbarMessage = "まず、似た画像を探したい画像を選択してください") }
+            return
+        }
+        val currentOrder = state.entries
+        val origin = currentOrder.firstOrNull { it.id in state.selectedIds } ?: selectedImages().firstOrNull()
+        if (origin == null) {
+            _uiState.update { it.copy(snackbarMessage = "基準にする画像が見つかりませんでした") }
+            return
+        }
+        _uiState.update {
+            it.copy(
+                extensionSelectionActive = true,
+                originImageId = origin.id,
+                hashMatchEnabled = false,
+                saturationTolerance = 0f,
+                brightnessTolerance = 0f,
+                colorPresetStep = 0,
+                aspectRatioOnly = false,
+                styleMatchThreshold = 0f
+            )
+        }
+        applyDisplayList()
+    }
+
+    /** 拡張選択を解除し、通常の一覧表示に戻す。基準画像(origin)の位置まで一覧をスクロールさせる。 */
+    private fun disableExtensionSelection() {
+        val originId = _uiState.value.originImageId
+        _uiState.update {
+            it.copy(
+                extensionSelectionActive = false,
+                originImageId = null,
+                hashMatchEnabled = false,
+                saturationTolerance = 0f,
+                brightnessTolerance = 0f,
+                colorPresetStep = 0,
+                aspectRatioOnly = false,
+                styleMatchThreshold = 0f
+            )
+        }
+        applyDisplayList()
+        val restoredIndex = _uiState.value.entries.indexOfFirst { it.id == originId }
+        if (restoredIndex >= 0) requestScroll(restoredIndex)
+    }
+
+    /**
+     * 拡張選択のフィルタを一覧に反映する。
+     * 基準画像(origin)との類似度は、保存済みの知覚ハッシュ・彩度明度・代表色パレット同士の
+     * 比較のみで判定するため、スライダー操作のたびに呼ばれても画像本体の再デコードは発生しない
+     * (未計算の画像がある場合のみ、ここでバックグラウンド計算される)。
+     * 基準画像(origin)は常に先頭に固定表示する。
+     */
+    private fun applyExtensionSelectionFilter(sorted: List<ImageItem>, state: OrganizerUiState) {
+        comparingJob?.cancel()
+        val origin = allImages.firstOrNull { it.id == state.originImageId }
+        if (origin == null) {
+            // 基準画像が移動・削除等で無くなっていた場合は、フィルタを解除して通常表示に戻す
+            _uiState.update {
+                it.copy(
+                    extensionSelectionActive = false,
+                    originImageId = null,
+                    entries = sorted,
+                    isComparing = false,
+                    matchedCount = 0,
+                    snackbarMessage = "基準画像が見つからないため、拡張選択を解除しました"
+                )
+            }
+            return
+        }
+        comparingJob = viewModelScope.launch {
+            _uiState.update { it.copy(isComparing = true) }
+            // ハッシュ・彩度明度・代表色パレットが未計算の画像だけ、ここでバックグラウンド計算する
+            val analyzed = repository.computeHashes(sorted)
+            val current = _uiState.value
+            val filtered = analyzed.filter { candidate ->
+                if (candidate.id == origin.id) return@filter true // 基準画像自身は常に表示する
+
+                val hashOk = !current.hashMatchEnabled || run {
+                    val oh = origin.perceptualHash
+                    val ch = candidate.perceptualHash
+                    oh != null && ch != null && PerceptualHash.hammingDistance(oh, ch) <= HASH_MATCH_THRESHOLD
+                }
+                val saturationOk = current.saturationTolerance <= 0f || run {
+                    val os = origin.avgSaturation
+                    val cs = candidate.avgSaturation
+                    os != null && cs != null && kotlin.math.abs(os - cs) <= current.saturationTolerance
+                }
+                val brightnessOk = current.brightnessTolerance <= 0f || run {
+                    val ob = origin.avgBrightness
+                    val cb = candidate.avgBrightness
+                    ob != null && cb != null && kotlin.math.abs(ob - cb) <= current.brightnessTolerance
+                }
+                val aspectOk = !current.aspectRatioOnly || run {
+                    val oa = origin.aspectRatio
+                    val ca = candidate.aspectRatio
+                    oa != null && ca != null && ColorPalette.aspectRatioMatches(oa, ca)
+                }
+                val styleOk = current.styleMatchThreshold <= 0f || run {
+                    val op = origin.colorPalette
+                    val cp = candidate.colorPalette
+                    op != null && cp != null && ColorPalette.similarity(op, cp) * 100f >= current.styleMatchThreshold
+                }
+                hashOk && saturationOk && brightnessOk && aspectOk && styleOk
+            }
+            // 基準画像(origin)を常に先頭に固定表示する
+            val originFirst = filtered.sortedByDescending { it.id == origin.id }
+            _uiState.update {
+                it.copy(
+                    entries = originFirst,
+                    isComparing = false,
+                    matchedCount = originFirst.size
+                )
+            }
+        }
+    }
+
+    fun toggleHashMatch(enabled: Boolean) {
+        _uiState.update { it.copy(hashMatchEnabled = enabled) }
+        applyDisplayList()
+    }
+
+    fun toggleAspectRatioOnly(enabled: Boolean) {
+        _uiState.update { it.copy(aspectRatioOnly = enabled) }
+        applyDisplayList()
+    }
+
+    /** 彩度スライダー(0.0〜0.35)。ドラッグ中に毎フレーム再フィルタが走らないようデバウンスする。 */
+    fun setSaturationTolerance(value: Float) {
+        val clamped = value.coerceIn(0f, 0.35f)
+        _uiState.update { it.copy(saturationTolerance = clamped) }
+        debounceApply()
+    }
+
+    /** 明度スライダー(0.0〜0.35)。ドラッグ中に毎フレーム再フィルタが走らないようデバウンスする。 */
+    fun setBrightnessTolerance(value: Float) {
+        val clamped = value.coerceIn(0f, 0.35f)
+        _uiState.update { it.copy(brightnessTolerance = clamped) }
+        debounceApply()
+    }
+
+    /** スタイル一致度スライダー(RGB5色、0.0〜100.0)。ドラッグ中に毎フレーム再フィルタが走らないようデバウンスする。 */
+    fun setStyleMatchThreshold(value: Float) {
+        val clamped = value.coerceIn(0f, 100f)
+        _uiState.update { it.copy(styleMatchThreshold = clamped) }
+        debounceApply()
+    }
+
+    private fun debounceApply() {
+        thresholdDebounceJob?.cancel()
+        thresholdDebounceJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(150)
+            applyDisplayList()
+        }
+    }
+
+    /**
+     * 「プリセット」ボタン。押すたびに OFF→A→B→C→OFF... とローテーションし、
+     * 彩度・明度スライダーの値をその数値へ一気に動かす(ワンタップの近道)。
+     * その後も彩度・明度スライダー自体は個別にドラッグして微調整できる。
+     */
+    fun cyclePresetStep() {
+        val nextStep = (_uiState.value.colorPresetStep + 1) % 4
+        val (sat, bri) = when (nextStep) {
+            1 -> ColorGroupPreset.A.saturationTolerance to ColorGroupPreset.A.brightnessTolerance
+            2 -> ColorGroupPreset.B.saturationTolerance to ColorGroupPreset.B.brightnessTolerance
+            3 -> ColorGroupPreset.C.saturationTolerance to ColorGroupPreset.C.brightnessTolerance
+            else -> 0f to 0f
+        }
+        _uiState.update { it.copy(colorPresetStep = nextStep, saturationTolerance = sat, brightnessTolerance = bri) }
+        applyDisplayList()
     }
 
     // ------------------------------------------------------------------
@@ -418,19 +514,55 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    fun selectGroup(groupId: Int) {
-        val idsInGroup = _uiState.value.entries
-            .filterIsInstance<DisplayEntry.Grouped>()
-            .filter { it.groupId == groupId }
-            .map { it.image.id }
-        _uiState.update { state ->
-            val newSet = state.selectedIds.toMutableSet().apply { addAll(idsInGroup) }
-            state.copy(selectionMode = true, selectedIds = newSet)
+    /**
+     * 長押しの入り口。
+     * ・すでにちょうど1枚だけ選択されている状態で、別の画像を長押しした場合は「範囲選択」
+     *   (今表示されている並び順で、その1枚と長押しした画像の間をまとめて選択する)。
+     * ・それ以外(未選択、または既に2枚以上選択中)は、今まで通り新しく1枚だけ選択を開始する。
+     */
+    fun handleLongPress(imageId: Long) {
+        val state = _uiState.value
+        if (state.selectedIds.size == 1 && imageId !in state.selectedIds) {
+            selectRange(state.selectedIds.first(), imageId)
+        } else {
+            startSelection(imageId)
         }
+    }
+
+    /** 現在の表示順(entries)を基準に、anchorIdとtargetIdの間にある画像をまとめて選択する。 */
+    private fun selectRange(anchorId: Long, targetId: Long) {
+        val entries = _uiState.value.entries
+        val anchorIndex = entries.indexOfFirst { it.id == anchorId }
+        val targetIndex = entries.indexOfFirst { it.id == targetId }
+        if (anchorIndex < 0 || targetIndex < 0) {
+            // 万一見つからなければ、安全のため通常の選択開始にフォールバックする
+            startSelection(targetId)
+            return
+        }
+        val range = minOf(anchorIndex, targetIndex)..maxOf(anchorIndex, targetIndex)
+        val rangeIds = range.map { entries[it].id }.toSet()
+        _uiState.update { it.copy(selectionMode = true, selectedIds = rangeIds) }
     }
 
     fun clearSelection() {
         _uiState.update { it.copy(selectionMode = false, selectedIds = emptySet()) }
+        jumpCursorIndex = -1
+    }
+
+    /**
+     * 「選択へジャンプ」ボタン。押すたびに、今の一覧表示順(entries)の中で選択されている画像を
+     * 先頭から順に巡回する(テキスト検索の「次を検索」と同じ考え方)。末尾まで行くと先頭に戻る。
+     */
+    fun jumpToNextSelected() {
+        val state = _uiState.value
+        if (state.selectedIds.isEmpty()) return
+        val entries = state.entries
+        val matchIndices = entries.indices.filter { entries[it].id in state.selectedIds }
+        if (matchIndices.isEmpty()) return
+        val currentPos = matchIndices.indexOf(jumpCursorIndex)
+        val nextPos = (currentPos + 1) % matchIndices.size
+        jumpCursorIndex = matchIndices[nextPos]
+        requestScroll(jumpCursorIndex)
     }
 
     private fun selectedImages(): List<ImageItem> {
@@ -460,127 +592,6 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         if (filtered != state.selectedIds) {
             _uiState.update { it.copy(selectedIds = filtered, selectionMode = filtered.isNotEmpty()) }
         }
-    }
-
-    /**
-     * 拡張機能(スタイル一致度検索)のフィルタを一覧に反映する。
-     * 基準画像との類似度は、保存済みの代表色パレット同士の距離計算のみで判定するため、
-     * スライダー操作のたびに呼ばれても画像本体の再デコードは発生しない
-     * (パレット自体は repository.computeHashes() が既存の仕組みと同様にキャッシュしており、
-     *  未計算の画像がある場合のみそこでバックグラウンド計算される)。
-     */
-    private fun applyExtensionFilter(sorted: List<ImageItem>, state: OrganizerUiState) {
-        groupingJob?.cancel()
-        val origin = allImages.firstOrNull { it.id == state.originImageId }
-        if (origin == null) {
-            // 基準画像が移動・削除等で無くなっていた場合は、フィルタを解除して通常表示に戻す
-            _uiState.update {
-                it.copy(
-                    extensionActive = false,
-                    extensionSheetVisible = false,
-                    originImageId = null,
-                    entries = sorted.map { img -> DisplayEntry.Single(img) },
-                    isGrouping = false,
-                    snackbarMessage = "基準画像が見つからないため、拡張機能を解除しました"
-                )
-            }
-            return
-        }
-        groupingJob = viewModelScope.launch {
-            _uiState.update { it.copy(isGrouping = true) }
-            // 代表色パレット・アスペクト比が未計算の画像だけ、ここでバックグラウンド計算する
-            val analyzed = repository.computeHashes(sorted)
-            val current = _uiState.value
-            val filtered = analyzed.filter { candidate ->
-                if (candidate.id == origin.id) return@filter true // 基準画像自身は常に表示する
-                val aspectOk = !current.aspectRatioOnly || run {
-                    val oa = origin.aspectRatio
-                    val ca = candidate.aspectRatio
-                    oa != null && ca != null && ColorPalette.aspectRatioMatches(oa, ca)
-                }
-                val styleOk = current.styleMatchThreshold <= 0 || run {
-                    val op = origin.colorPalette
-                    val cp = candidate.colorPalette
-                    op != null && cp != null && ColorPalette.similarity(op, cp) * 100f >= current.styleMatchThreshold
-                }
-                aspectOk && styleOk
-            }
-            _uiState.update {
-                it.copy(
-                    entries = filtered.map { img -> DisplayEntry.Single(img) },
-                    isGrouping = false,
-                    groupCount = filtered.size
-                )
-            }
-        }
-    }
-
-    /**
-     * 「拡張」ボタン押下時の入り口。選択中の画像を基準(origin)にして設定パネルを開く。
-     * 選択が1枚ならその画像自身、2枚以上なら(ソート表示上での)最初の画像を基準にする。
-     */
-    fun openExtensionPanel() {
-        val selectedIds = _uiState.value.selectedIds
-        if (selectedIds.isEmpty()) {
-            _uiState.update { it.copy(snackbarMessage = "まず、似た画像を探したい画像を選択してください") }
-            return
-        }
-        val currentOrder = _uiState.value.entries.mapNotNull { entry ->
-            when (entry) {
-                is DisplayEntry.Single -> entry.image
-                is DisplayEntry.Grouped -> entry.image
-            }
-        }
-        val origin = currentOrder.firstOrNull { it.id in selectedIds } ?: selectedImages().firstOrNull()
-        if (origin == null) {
-            _uiState.update { it.copy(snackbarMessage = "基準にする画像が見つかりませんでした") }
-            return
-        }
-        _uiState.update {
-            it.copy(
-                extensionSheetVisible = true,
-                extensionActive = true,
-                originImageId = origin.id,
-                aspectRatioOnly = false,
-                styleMatchThreshold = 0
-            )
-        }
-        applySortAndGroup()
-    }
-
-    /** 設定パネル(ボトムシート)を閉じる。フィルタ自体は維持する(再度「拡張」を押すか解除操作でOFFにする) */
-    fun closeExtensionSheet() {
-        _uiState.update { it.copy(extensionSheetVisible = false) }
-    }
-
-    fun toggleAspectRatioOnly(enabled: Boolean) {
-        _uiState.update { it.copy(aspectRatioOnly = enabled) }
-        applySortAndGroup()
-    }
-
-    /** スタイル一致度スライダー(0〜100)。ドラッグ中に毎フレーム再フィルタが走らないようデバウンスする。 */
-    fun setStyleMatchThreshold(value: Int) {
-        val clamped = value.coerceIn(0, 100)
-        _uiState.update { it.copy(styleMatchThreshold = clamped) }
-        thresholdDebounceJob?.cancel()
-        thresholdDebounceJob = viewModelScope.launch {
-            kotlinx.coroutines.delay(150)
-            applySortAndGroup()
-        }
-    }
-
-    /** 拡張機能のフィルタを解除し、通常の一覧表示に戻す */
-    fun disableExtensionFilter() {
-        _uiState.update {
-            it.copy(
-                extensionActive = false,
-                extensionSheetVisible = false,
-                originImageId = null,
-                aspectRatioOnly = false,
-                styleMatchThreshold = 0
-            )
-        }
-        applySortAndGroup()
     }
 
     // ------------------------------------------------------------------
@@ -664,12 +675,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      * @param visibleIndex 実行直前に一覧で見えていた先頭位置。
      */
     fun renameSelectedSequentially(visibleIndex: Int) {
-        val currentOrder = _uiState.value.entries.mapNotNull { entry ->
-            when (entry) {
-                is DisplayEntry.Single -> entry.image
-                is DisplayEntry.Grouped -> entry.image
-            }
-        }
+        val currentOrder = _uiState.value.entries
         val selectedIds = _uiState.value.selectedIds
         val orderedTargets = currentOrder.filter { it.id in selectedIds }
         if (orderedTargets.isEmpty()) {
@@ -809,13 +815,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         if (entries.isEmpty()) return
 
         val selectedStartIndex = if (state.selectedIds.isNotEmpty()) {
-            entries.indexOfFirst { entry ->
-                val id = when (entry) {
-                    is DisplayEntry.Single -> entry.image.id
-                    is DisplayEntry.Grouped -> entry.image.id
-                }
-                id in state.selectedIds
-            }.takeIf { it >= 0 }
+            entries.indexOfFirst { it.id in state.selectedIds }.takeIf { it >= 0 }
         } else null
 
         val startIndex = (selectedStartIndex ?: visibleIndex).coerceIn(0, entries.size - 1)

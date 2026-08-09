@@ -140,6 +140,8 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
             topBar = {
                 OrganizerTopBar(
                     folderLabel = state.currentFolderLabel,
+                    isZipMode = state.isZipMode,
+                    folderDetailLabel = state.folderDetailLabel,
                     imageCount = state.totalImageCount,
                     folderTotalCount = state.folderTotalCount,
                     isLoading = state.isLoading,
@@ -250,7 +252,7 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
 
         if (state.slideshowActive) {
             SlideshowOverlay(
-                entries = state.entries,
+                entries = state.slideshowEntries,
                 currentIndex = state.slideshowIndex,
                 interval = state.slideshowInterval,
                 onTapAdvance = { viewModel.advanceSlideshow() },

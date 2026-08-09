@@ -1,15 +1,20 @@
 package com.hazuki.imageorganizer.ui.components
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsTopHeight
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
@@ -92,6 +97,8 @@ private fun presetStepLabel(step: Int): String = when (step) {
 @Composable
 fun OrganizerTopBar(
     folderLabel: String,
+    isZipMode: Boolean,
+    folderDetailLabel: String,
     imageCount: Int,
     folderTotalCount: Int,
     isLoading: Boolean,
@@ -130,19 +137,30 @@ fun OrganizerTopBar(
     // それ以外（スマホなど）は 120dp に設定します。
     val sliderWidth = if (configuration.screenWidthDp >= 600) 260.dp else 120.dp
 
-    Surface(
-        // ステータスバー分の余白を確保(Edge-to-Edge表示でも重ならないように)
-        modifier = modifier.fillMaxWidth().statusBarsPadding(),
-        color = FujiSurfaceVariant,
-        tonalElevation = 2.dp
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        // ステータスバー(時計・電波・バッテリー)の視認性を確保するための黒帯。
+        // 背景色やテーマに関わらず、この帯の上では白いシステムアイコンが必ずはっきり見える。
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.Black)
+                .windowInsetsTopHeight(WindowInsets.statusBars)
+        )
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = FujiSurfaceVariant,
+            tonalElevation = 2.dp
+        ) {
+            Column(modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 16.dp, bottom = 8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    modifier = Modifier.weight(1f, fill = false),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     IconButton(onClick = onOpenFolder) {
                         Icon(
                             Icons.Filled.FolderOpen,
@@ -194,11 +212,17 @@ fun OrganizerTopBar(
                         }
                     }
                     Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        var detailVisible by remember(folderLabel, isZipMode) { mutableStateOf(false) }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { detailVisible = !detailVisible }
+                        ) {
                             Text(
                                 text = folderLabel,
                                 style = MaterialTheme.typography.titleMedium,
-                                color = FujiPrimaryDark
+                                color = FujiPrimaryDark,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                             )
                             // テキストのカウントは読込/計算が速いと一瞬で変わってしまい見えにくいため、
                             // 読み込み中・拡張選択の絞り込み計算中は小さなスピナーを添えて一目でわかるようにする
@@ -211,6 +235,18 @@ fun OrganizerTopBar(
                                     color = FujiPrimaryDark
                                 )
                             }
+                        }
+                        // タップした時だけ、フォルダのフルパス(またはZIPの実際のファイル名)を表示する。
+                        // 横に長くなりがちなので、この行だけ横スクロールできるようにして
+                        // 上部メニュー全体が圧迫されないようにしている。
+                        if (detailVisible) {
+                            Text(
+                                text = folderDetailLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = FujiPrimaryDark.copy(alpha = 0.8f),
+                                maxLines = 1,
+                                modifier = Modifier.horizontalScroll(rememberScrollState())
+                            )
                         }
                         Text(
                             text = when {
@@ -357,6 +393,7 @@ fun OrganizerTopBar(
                     )
                 }
             }
+        }
         }
     }
 }

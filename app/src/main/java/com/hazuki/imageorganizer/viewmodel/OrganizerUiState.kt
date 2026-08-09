@@ -22,6 +22,11 @@ data class OrganizerUiState(
     val isStreaming: Boolean = false, // 段階読込中(バックグラウンドでバッチ追加中)は true。画面消灯防止に使う。
     val isComparing: Boolean = false, // 拡張選択の絞り込み計算中は true。画面消灯防止 + 上部バーの「計算中」表示に使う。
     val currentFolderLabel: String = "Download/未整理",
+    // true: ZIPファイルを開いている(TopBarでは「Zip編集中」ボタンとして表示する)
+    val isZipMode: Boolean = false,
+    // ボタンをタップした時に表示する詳細情報。フォルダの場合はルートからのフルパス、
+    // ZIPの場合は実際のZIPファイル名。
+    val folderDetailLabel: String = "Download/未整理",
     val recentEntries: List<RecentEntry> = emptyList(),
     val entries: List<ImageItem> = emptyList(),
     val totalImageCount: Int = 0, // これまでに読み込み済みの枚数
@@ -41,6 +46,9 @@ data class OrganizerUiState(
     val slideshowActive: Boolean = false,
     val slideshowInterval: SlideshowInterval = SlideshowInterval.S3,
     val slideshowIndex: Int = 0,
+    // スライドショー開始時点で「選択中の画像だけ」を表示順のまま抜き出したリスト。
+    // 選択が無い状態で開始した場合は、entries(表示中の全件)と同じ内容になる。
+    val slideshowEntries: List<ImageItem> = emptyList(),
     val pendingScrollRequest: ScrollRequest? = null, // 一覧をこの位置までスクロールさせるための一時的な指示(スライドショー終了後・フォルダ再読込後・拡張選択終了後など)
 
     // ---- 拡張選択: 基準画像(origin)に似た画像を絞り込む ----

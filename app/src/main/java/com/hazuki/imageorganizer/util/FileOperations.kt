@@ -104,6 +104,106 @@ class FileOperations(private val context: Context) {
     }
 
     /**
+     * ZIPファイル名を「年月日時分_連番.zip」形式で、実際の保存先フォルダに既にあるファイル名と
+     * 衝突しないように自動生成する(同じ分に2回ZIP化しても "_01" が重複しないようにするため)。
+     *
+     * @param images これからZIP化する画像(ローカルZIP展開キャッシュの場合、保存先フォルダの特定に使う)
+     * @param zipDir SAFでもDocuments既定でもない、ZIPをその場でキャッシュ展開して開いている場合の基点フォルダ
+     * @param treeUri SAFでフォルダを選択して開いている場合のツリーUri
+     */
+    suspend fun buildUniqueZipFileName(
+        images: List<ImageItem>,
+        zipDir: java.io.File?,
+        treeUri: Uri?
+    ): String = withContext(Dispatchers.IO) {
+        val prefix = RenameUtil.buildZipTimestampPrefix()
+        val existingNames: Set<String> = when {
+            zipDir != null -> {
+                // ローカル展開キャッシュ: 画像と同じ階層にある「_Moved_」サブフォルダの中身を見る
+                val firstFile = images.firstOrNull()?.uri?.path?.let { java.io.File(it) }
+                val movedDir = firstFile?.parentFile?.let { java.io.File(it, MOVED_FOLDER_NAME) }
+                movedDir?.takeIf { it.exists() }?.listFiles()?.mapNotNull { it.name }?.toSet() ?: emptySet()
+            }
+            treeUri != null -> queryMovedFolderChildNamesSaf(treeUri)
+            else -> queryMovedFolderChildNamesMediaStore()
+        }
+        RenameUtil.buildZipFileName(prefix, existingNames)
+    }
+
+    /** SAFツリー内の「_Moved_」サブフォルダにある既存ファイル名一覧を返す(フォルダが無ければ空集合) */
+    private fun queryMovedFolderChildNamesSaf(treeUri: Uri): Set<String> {
+        val resolver = context.contentResolver
+        return try {
+            val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+            val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+            val parentDocId = DocumentsContract.getDocumentId(parentDocUri)
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+            var movedFolderUri: Uri? = null
+            resolver.query(
+                childrenUri,
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE
+                ),
+                null, null, null
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                while (cursor.moveToNext()) {
+                    if (cursor.getString(nameCol) == MOVED_FOLDER_NAME &&
+                        cursor.getString(mimeCol) == DocumentsContract.Document.MIME_TYPE_DIR
+                    ) {
+                        movedFolderUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(idCol))
+                    }
+                }
+            }
+            val foundMovedFolderUri = movedFolderUri ?: return emptySet()
+            val movedFolderDocId = DocumentsContract.getDocumentId(foundMovedFolderUri)
+            val movedChildrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, movedFolderDocId)
+            val names = mutableSetOf<String>()
+            resolver.query(
+                movedChildrenUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null, null, null
+            )?.use { cursor ->
+                val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                while (cursor.moveToNext()) {
+                    names += cursor.getString(nameCol)
+                }
+            }
+            names
+        } catch (e: Exception) {
+            emptySet()
+        }
+    }
+
+    /** MediaStore経由(既定のDownload/_Moved_)にある既存ファイル名一覧を返す */
+    private fun queryMovedFolderChildNamesMediaStore(): Set<String> {
+        val resolver = context.contentResolver
+        val targetRelativePath = "${Environment.DIRECTORY_DOWNLOADS}/$MOVED_FOLDER_NAME/"
+        val names = mutableSetOf<String>()
+        return try {
+            resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Downloads.DISPLAY_NAME),
+                "${MediaStore.Downloads.RELATIVE_PATH} = ?",
+                arrayOf(targetRelativePath),
+                null
+            )?.use { cursor ->
+                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Downloads.DISPLAY_NAME)
+                while (cursor.moveToNext()) {
+                    names += cursor.getString(nameCol)
+                }
+            }
+            names
+        } catch (e: Exception) {
+            emptySet()
+        }
+    }
+
+    /**
      * 選択画像をZIPアーカイブ化し、「移動」と同じ保存先(既定フォルダの場合は Download/_Moved_ )に保存する。
      * @return 生成したZIPファイルのUri。失敗時はnull。
      */

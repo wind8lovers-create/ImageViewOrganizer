@@ -3,6 +3,7 @@ package com.hazuki.imageorganizer.viewmodel
 import android.app.Application
 import android.content.IntentSender
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.hazuki.imageorganizer.data.ImageItem
@@ -132,7 +133,16 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun loadDocumentsFolder(scrollTarget: Int = 0) {
         currentFolderUri = null
         currentZipDir = null
-        _uiState.update { it.copy(isLoading = true, isStreaming = true, currentFolderLabel = "Download/未整理", folderTotalCount = 0) }
+        _uiState.update {
+            it.copy(
+                isLoading = true,
+                isStreaming = true,
+                currentFolderLabel = "Download/未整理",
+                isZipMode = false,
+                folderDetailLabel = "Download/未整理",
+                folderTotalCount = 0
+            )
+        }
         allImages = emptyList()
         viewModelScope.launch {
             repository.loadDefaultFolderStreaming()
@@ -148,7 +158,16 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun openFolder(treeUri: Uri, label: String, recordHistory: Boolean = true, scrollTarget: Int = 0) {
         currentFolderUri = treeUri
         currentZipDir = null
-        _uiState.update { it.copy(isLoading = true, isStreaming = true, currentFolderLabel = label, folderTotalCount = 0) }
+        _uiState.update {
+            it.copy(
+                isLoading = true,
+                isStreaming = true,
+                currentFolderLabel = label,
+                isZipMode = false,
+                folderDetailLabel = buildReadableFullPath(treeUri),
+                folderTotalCount = 0
+            )
+        }
         allImages = emptyList()
         if (recordHistory) {
             recentStore.recordOpened(RecentEntry(RecentEntryType.FOLDER, treeUri.toString(), label, System.currentTimeMillis()))
@@ -174,7 +193,18 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     /** ZIP書庫を選択した際の読込。アプリキャッシュへ展開してから通常フォルダと同様に扱う。 */
     fun openZipFile(zipUri: Uri, label: String, recordHistory: Boolean = true, scrollTarget: Int = 0) {
         currentFolderUri = null
-        _uiState.update { it.copy(isLoading = true, isStreaming = true, currentFolderLabel = "$label (ZIP)", folderTotalCount = 0) }
+        _uiState.update {
+            it.copy(
+                isLoading = true,
+                isStreaming = true,
+                // 長いZIPファイル名が上部メニューを圧迫しないよう、普段は固定の短い文言にしておく。
+                // 実際のファイル名はfolderDetailLabelに入れ、ボタンをタップした時だけ表示する。
+                currentFolderLabel = "Zip編集中",
+                isZipMode = true,
+                folderDetailLabel = label,
+                folderTotalCount = 0
+            )
+        }
         allImages = emptyList()
         if (recordHistory) {
             recentStore.recordOpened(RecentEntry(RecentEntryType.ZIP, zipUri.toString(), label, System.currentTimeMillis()))
@@ -226,6 +256,27 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     /** 一覧をこの位置までスクロールさせるよう、Compose側(MainScreen)に一時的な指示を出す */
     private fun requestScroll(index: Int) {
         _uiState.update { it.copy(pendingScrollRequest = ScrollRequest(index.coerceAtLeast(0))) }
+    }
+
+    /**
+     * SAFで選択したフォルダのUriから、ルートからの読みやすいフルパスを組み立てる。
+     * SAFのドキュメントIDは "primary:DCIM/Camera" のような「ボリューム名:相対パス」形式になっているため、
+     * これを "内部ストレージ/DCIM/Camera" のような表示用の文字列に変換する。
+     * (取得に失敗した場合は、フォルダ名だけでも表示できるようフォールバックする)
+     */
+    private fun buildReadableFullPath(treeUri: Uri): String {
+        return try {
+            val docId = DocumentsContract.getTreeDocumentId(treeUri)
+            val colonIndex = docId.indexOf(':')
+            if (colonIndex < 0) return docId
+            val volume = docId.substring(0, colonIndex)
+            val relativePath = docId.substring(colonIndex + 1)
+            // "primary" は端末本体のストレージを指す。それ以外はSDカード等の外部ストレージ。
+            val volumeLabel = if (volume == "primary") "内部ストレージ" else "SDカード"
+            if (relativePath.isBlank()) volumeLabel else "$volumeLabel/$relativePath"
+        } catch (e: Exception) {
+            treeUri.lastPathSegment ?: ""
+        }
     }
 
     /**
@@ -782,9 +833,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             return
         }
         viewModelScope.launch {
-            val name = "images_${System.currentTimeMillis()}.zip"
             val zipDir = currentZipDir
             val treeUri = currentFolderUri
+            // 「年月日時分_01.zip」形式。保存先に同名があれば "_02" ... と自動で繰り上げる
+            val name = fileOps.buildUniqueZipFileName(targets, zipDir, treeUri)
             val success = when {
                 zipDir != null -> fileOps.zipImagesToMovedLocal(targets, name) != null
                 treeUri != null -> fileOps.zipImagesToMovedSaf(treeUri, targets, name) != null
@@ -826,20 +878,32 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * @param visibleIndex 一覧表示で現在見えている先頭の画像のインデックス(呼び出し側のLazyGridStateから渡す)。
-     * 選択中の画像がある場合は、選択の中で最も表示順が早いものを優先して開始位置にする。
+     * 選択中の画像がある場合は、表示順のままその画像だけを抜き出してスライドショーの対象にする
+     * (以前は開始位置だけ選択を反映し、次の画像からは未選択のものも含めて全件をループしていた)。
      */
     private fun startSlideshow(visibleIndex: Int) {
         val state = _uiState.value
         val entries = state.entries
         if (entries.isEmpty()) return
 
-        val selectedStartIndex = if (state.selectedIds.isNotEmpty()) {
-            entries.indexOfFirst { it.id in state.selectedIds }.takeIf { it >= 0 }
-        } else null
+        val targetEntries = if (state.selectedIds.isNotEmpty()) {
+            entries.filter { it.id in state.selectedIds }
+        } else {
+            entries
+        }
+        if (targetEntries.isEmpty()) return
 
-        val startIndex = (selectedStartIndex ?: visibleIndex).coerceIn(0, entries.size - 1)
+        // 選択がある場合は対象リストの先頭(=選択の中で最も表示順が早いもの)から、
+        // 選択が無い場合は一覧で見えている位置から開始する
+        val startIndex = if (state.selectedIds.isNotEmpty()) {
+            0
+        } else {
+            visibleIndex.coerceIn(0, targetEntries.size - 1)
+        }
 
-        _uiState.update { it.copy(slideshowActive = true, slideshowIndex = startIndex) }
+        _uiState.update {
+            it.copy(slideshowActive = true, slideshowIndex = startIndex, slideshowEntries = targetEntries)
+        }
         runSlideshowLoop()
     }
 
@@ -854,7 +918,8 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     fun advanceSlideshow() {
-        val count = _uiState.value.entries.size
+        // 全件(entries)ではなく、開始時に確定した対象リスト(slideshowEntries)の件数でループさせる
+        val count = _uiState.value.slideshowEntries.size
         if (count == 0) return
         _uiState.update { it.copy(slideshowIndex = (it.slideshowIndex + 1) % count) }
     }
@@ -866,9 +931,20 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     private fun stopSlideshow() {
         slideshowJob?.cancel()
-        val stoppedIndex = _uiState.value.slideshowIndex
+        val state = _uiState.value
+        val targets = state.slideshowEntries
+
+        // slideshowIndexは「対象リスト(targets)」上の位置であり、一覧グリッド(entries)上の位置とは
+        // 選択再生時にズレることがあるため、いま表示中だった画像のIDを介して
+        // 一覧グリッド側での実際の位置に変換してからスクロールさせる。
+        val stoppedImageId = targets.getOrNull(state.slideshowIndex.mod(targets.size.coerceAtLeast(1)))?.id
+        val gridIndex = stoppedImageId
+            ?.let { id -> state.entries.indexOfFirst { it.id == id } }
+            ?.takeIf { it >= 0 }
+            ?: 0
+
         // フルスクリーン表示は開かず、一覧側をこの位置までスクロールさせて「続きから見られる」ようにする
-        _uiState.update { it.copy(slideshowActive = false, pendingScrollRequest = ScrollRequest(stoppedIndex)) }
+        _uiState.update { it.copy(slideshowActive = false, pendingScrollRequest = ScrollRequest(gridIndex)) }
     }
 
     /** 一覧のスクロール追従が完了したら呼ぶ(一度だけ実行させるため) */

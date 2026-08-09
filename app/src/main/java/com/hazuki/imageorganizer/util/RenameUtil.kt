@@ -55,4 +55,31 @@ object RenameUtil {
             "${prefix}_$seq"
         }
     }
+
+    // ==================================================================
+    // ZIP圧縮ファイル名(REN命名とは別の用途)
+    // 命名規則: 年月日時分(10桁) + "_" + 連番(01, 02, ...)
+    // 同じ分に複数回ZIPを作成した場合は、既存のファイル名と重複しないよう
+    // 連番を繰り上げていく(01が使われていたら02、02もあれば03...)。
+    // ==================================================================
+
+    /** 現在時刻から ZIPファイル名用のタイムスタンプ(10桁、"REN"プレフィックス無し)を生成 */
+    fun buildZipTimestampPrefix(now: Date = Date()): String {
+        return TIMESTAMP_FORMAT.format(now)
+    }
+
+    /**
+     * 「年月日時分_01.zip」形式のファイル名を、既存ファイル名と衝突しないように組み立てる。
+     * @param timestampPrefix buildZipTimestampPrefix() で得た10桁のタイムスタンプ
+     * @param existingNames 保存先フォルダに既に存在するファイル名の一覧(この中と重複しない番号を選ぶ)
+     * @return 例: "2608081434_01.zip" (01が既に使われていれば "2608081434_02.zip" ...)
+     */
+    fun buildZipFileName(timestampPrefix: String, existingNames: Set<String>): String {
+        var seqNumber = 1
+        while (true) {
+            val candidate = "${timestampPrefix}_${seqNumber.toString().padStart(2, '0')}.zip"
+            if (candidate !in existingNames) return candidate
+            seqNumber++
+        }
+    }
 }

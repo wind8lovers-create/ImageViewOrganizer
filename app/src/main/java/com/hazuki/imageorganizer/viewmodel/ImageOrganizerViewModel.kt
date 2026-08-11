@@ -72,7 +72,8 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         _uiState.update { it.copy(recentEntries = recentStore.getHistory()) }
         val savedGroups = classificationStore.loadGroups()
         if (savedGroups.isNotEmpty()) {
-            _uiState.update { it.copy(classificationGroups = savedGroups) }
+            // 保存されたグループがある場合、UI表示用の状態を構築する
+            rebuildClassificationDerivedState(savedGroups)
         }
         val last = recentStore.getLastOpened()
         if (last == null) {
@@ -724,11 +725,13 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         when {
             zipDir != null -> viewModelScope.launch {
                 val moved = fileOps.moveToMovedFolderLocal(targets)
+                removeImagesFromAllGroups(moved.map { it.id })
                 _uiState.update { it.copy(snackbarMessage = "${moved.size}件を_Moved_に移動しました") }
                 reloadCurrentFolder(visibleIndex)
             }
             treeUri != null -> viewModelScope.launch {
                 val moved = fileOps.moveToMovedFolderSaf(treeUri, targets)
+                removeImagesFromAllGroups(moved.map { it.id })
                 _uiState.update { it.copy(snackbarMessage = "${moved.size}件を_Moved_に移動しました") }
                 reloadCurrentFolder(visibleIndex)
             }
@@ -752,12 +755,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         when {
             zipDir != null -> viewModelScope.launch {
                 val count = fileOps.deleteImagesLocal(targets)
+                removeImagesFromAllGroups(targets.map { it.id })
                 clearSelection()
                 _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
                 reloadCurrentFolder(visibleIndex)
             }
             treeUri != null -> viewModelScope.launch {
                 val count = fileOps.deleteImagesSaf(targets)
+                removeImagesFromAllGroups(targets.map { it.id })
                 clearSelection()
                 _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
                 reloadCurrentFolder(visibleIndex)
@@ -833,12 +838,16 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         viewModelScope.launch {
             when (action) {
                 is PendingMediaAction.Delete -> {
+                    // グループからも削除対象の画像を除去する
+                    removeImagesFromAllGroups(action.targets.map { it.id })
                     clearSelection()
                     _uiState.update { it.copy(snackbarMessage = "${action.targets.size}件を削除しました") }
                     reloadCurrentFolder(action.restoreScrollIndex)
                 }
                 is PendingMediaAction.Move -> {
                     val moved = fileOps.moveToMovedFolder(action.targets)
+                    // 移動(_Movedへ)した画像も、現在の管理からは外れるためグループから除去する
+                    removeImagesFromAllGroups(moved.map { it.id })
                     _uiState.update { it.copy(snackbarMessage = "${moved.size}件を Download/_Moved_ に移動しました") }
                     reloadCurrentFolder(action.restoreScrollIndex)
                 }
@@ -1014,22 +1023,17 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * allImagesが更新されるたび(reloadCurrentFolder完了時など)に呼ぶ。
-     * 既に端末上から無くなった画像IDをグループから取り除き、その結果0枚になったグループは自動削除する。
-     * (要件定義 Q19: 移動・削除されたら、グループ所属情報も自動的に消える)
+     * 表示の整合性を取るために派生状態(groupedImageIds / classificationTiles)を再構築する。
+     *
+     * 注意: 以前は「今開いているフォルダに画像がない場合はグループから削除する」という処理をしていたが、
+     * それだとフォルダを切り替えるたびにデータが消失してしまうため、現在は削除せず維持するようにしている。
      */
     private fun reconcileClassification() {
         val current = _uiState.value.classificationGroups
         if (current.isEmpty()) return
-        val validIds = allImages.map { it.id }.toSet()
-        val cleaned = current
-            .map { g -> g.copy(imageIds = g.imageIds.filter { it in validIds }) }
-            .filter { it.imageIds.isNotEmpty() } // 空になったグループは自動削除(Q13)
-        if (cleaned != current) {
-            rebuildClassificationDerivedState(cleaned)
-        } else {
-            // 画像自体は変わらなくても、代表画像やソートの再計算だけは反映させておく
-            rebuildClassificationDerivedState(current)
-        }
+        
+        // 画像の存在チェックによる削除は行わず、常に現在のグループ状態で表示用データを再構成する
+        rebuildClassificationDerivedState(current)
     }
 
     /** 画面上部の「画像一覧⇔分類一覧」ボタン(選択モード中でない時の通常動作) */
@@ -1295,6 +1299,22 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 addModeTargetKey = null,
                 addModeCategory = null
             )
+        }
+    }
+
+    /**
+     * 指定された画像ID群を、すべての分類グループから一括で取り除く。
+     * 画像が実際に削除/移動された際に呼ぶことで、グループ情報の整合性を保つ。
+     */
+    private fun removeImagesFromAllGroups(imageIds: List<Long>) {
+        val idSet = imageIds.toSet()
+        val current = _uiState.value.classificationGroups
+        val updated = current.map { g ->
+            g.copy(imageIds = g.imageIds.filter { it !in idSet })
+        }.filter { it.imageIds.isNotEmpty() }
+        
+        if (updated != current) {
+            rebuildClassificationDerivedState(updated)
         }
     }
 

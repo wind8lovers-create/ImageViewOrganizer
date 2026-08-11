@@ -1,2 +1,4 @@
-- [x] `ImageOrganizerViewModel.kt` のカテゴリソートロジックを修正する
-- [x] 動作確認を行い、アルファベット順に並ぶことを確認する
+- [x] `ImageOrganizerViewModel.kt` の起動時の復元処理を追加する
+- [x] `reconcileClassification` の自動削除ロジックを修正する
+- [x] アプリ内での削除・移動時にグループから外す処理を追加する
+- [x] 動作確認を行い、フォルダ切り替えや再起動でデータが消えないことを確認する

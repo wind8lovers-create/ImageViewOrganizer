@@ -991,24 +991,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         val groupedIndex = mutableMapOf<Long, Char>()
         groups.forEach { g -> g.imageIds.forEach { id -> groupedIndex[id] = g.category } }
 
-        // カテゴリごとに島状にまとめつつ、カテゴリの並び順は「現在のソート条件」を
-        // 各カテゴリの代表(連番が最も若いグループの代表画像)に適用して決める。
-        val sortOption = _uiState.value.sortOption
+        // カテゴリごとに島状にまとめつつ、カテゴリの並び順は「アルファベット順(A→Z)」で固定する。
+        // (以前はソート設定に従って代表画像で並び替えていたが、直感的な探しやすさを優先してアルファベット順に変更)
         val byCategory = groups.groupBy { it.category }
-        val anchorPerCategory = byCategory.mapValues { (_, gs) ->
-            val first = gs.minByOrNull { it.sequence }
-            first?.imageIds?.firstOrNull()?.let { id -> allImages.firstOrNull { it.id == id } }
-        }
-        val orderedCategories = anchorPerCategory.entries
-            .filter { it.value != null }
-            .map { it.key to it.value!! }
-            .let { list ->
-                val sortedAnchors = sortImageList(list.map { it.second }, sortOption)
-                sortedAnchors.mapNotNull { anchor -> list.firstOrNull { it.second.id == anchor.id }?.first }
-            }
-        // 代表画像が見つからなかった(画像が消えた等の)カテゴリは末尾に回す
-        val remaining = byCategory.keys.filter { it !in orderedCategories }
-        val categoryOrder = orderedCategories + remaining
+        val categoryOrder = byCategory.keys.sorted()
 
         val tiles = categoryOrder.flatMap { category ->
             byCategory[category].orEmpty().sortedBy { it.sequence }.map { g ->

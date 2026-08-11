@@ -2,6 +2,7 @@ package com.hazuki.imageorganizer.ui.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
@@ -43,6 +44,7 @@ import com.hazuki.imageorganizer.data.ThumbnailSize
 import com.hazuki.imageorganizer.ui.theme.FujiOutline
 import com.hazuki.imageorganizer.ui.theme.FujiPrimaryDark
 import com.hazuki.imageorganizer.ui.theme.SelectionOverlay
+import com.hazuki.imageorganizer.util.ClassificationColorUtil
 import kotlinx.coroutines.launch
 
 @Composable
@@ -54,7 +56,12 @@ fun ImageGrid(
     onTap: (Int) -> Unit,
     onLongPress: (Int) -> Unit,
     modifier: Modifier = Modifier,
-    gridState: androidx.compose.foundation.lazy.grid.LazyGridState = rememberLazyGridState()
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState = rememberLazyGridState(),
+    // ---- 手動グルーピング(分類)機能 ----
+    // groupedImageIds: 画像ID -> 所属カテゴリ。枠色の表示に使う(選択モードでなくても常時表示)。
+    // dimmedIds: 選択モード中、既に他のグループに入っていて選択できない画像(暗く表示・タップ無効化)。
+    groupedImageIds: Map<Long, Char> = emptyMap(),
+    dimmedIds: Set<Long> = emptySet()
 ) {
     val state = gridState
     val coroutineScope = rememberCoroutineScope()
@@ -74,7 +81,9 @@ fun ImageGrid(
                     selectedIds = selectedIds,
                     selectionMode = selectionMode,
                     onTap = onTap,
-                    onLongPress = onLongPress
+                    onLongPress = onLongPress,
+                    groupCategory = groupedImageIds[entries[index].id],
+                    isDimmed = entries[index].id in dimmedIds
                 )
             }
         }
@@ -168,16 +177,27 @@ private fun GridCellContent(
     selectedIds: Set<Long>,
     selectionMode: Boolean,
     onTap: (Int) -> Unit,
-    onLongPress: (Int) -> Unit
+    onLongPress: (Int) -> Unit,
+    groupCategory: Char? = null,
+    isDimmed: Boolean = false
 ) {
     val image = entries[index]
     val isSelected = image.id in selectedIds
+    // 選択モード中で「暗表示」対象の画像は、タップ/長押しともに無効化する
+    // (すでに他のグループに入っている画像を、二重にグループ化させないための仕様)
+    val interactionEnabled = !(selectionMode && isDimmed)
 
     Box(
         modifier = Modifier
             .padding(1.dp)
             .aspectRatio(1f)
+            .let { m ->
+                if (groupCategory != null) {
+                    m.border(2.dp, ClassificationColorUtil.colorForCategory(groupCategory))
+                } else m
+            }
             .combinedClickable(
+                enabled = interactionEnabled,
                 onClick = { onTap(index) },
                 onLongClick = { onLongPress(index) }
             )
@@ -200,6 +220,11 @@ private fun GridCellContent(
 
         if (isSelected) {
             Box(modifier = Modifier.fillMaxSize().background(SelectionOverlay))
+        }
+
+        // 選択モード中、他のグループに既に入っている画像を暗く表示(要件定義Q2)
+        if (selectionMode && isDimmed) {
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)))
         }
 
         if (selectionMode) {

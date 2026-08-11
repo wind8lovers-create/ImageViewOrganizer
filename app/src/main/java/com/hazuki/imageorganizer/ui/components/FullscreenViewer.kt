@@ -6,6 +6,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
@@ -56,7 +57,9 @@ fun FullscreenViewer(
 
         IconButton(
             onClick = onDismiss,
-            modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)
+            // 背景は既に黒(status bar自体は見えている)だが、ボタンだけはシステムの時計・電波表示と
+            // 重なって押せなくなることがあるため、ステータスバー分だけ下にずらす。
+            modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp)
         ) {
             Icon(Icons.Filled.Close, contentDescription = "閉じる", tint = Color.White)
         }

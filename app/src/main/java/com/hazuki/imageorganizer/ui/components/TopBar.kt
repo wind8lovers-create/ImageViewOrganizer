@@ -16,9 +16,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PhotoSizeSelectLarge
 import androidx.compose.material.icons.filled.PhotoSizeSelectSmall
 import androidx.compose.material.icons.filled.PlayCircle
@@ -128,6 +131,13 @@ fun OrganizerTopBar(
     onToggleSlideshow: () -> Unit,
     thumbnailSize: ThumbnailSize,
     onToggleThumbnailSize: () -> Unit,
+    // ---- 手動グルーピング(分類)機能 ----
+    // 画面モードに応じて「分類一覧」⇔「画像一覧」の表示が入れ替わり、
+    // 選択モード中はさらに「分類登録」(画像追加モード中は「追加確定」)に差し替わる。
+    isClassificationListMode: Boolean,
+    selectionMode: Boolean,
+    addModeActive: Boolean,
+    onClassificationButtonClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     // --- 画面幅に応じたスライダー幅の決定 ---
@@ -295,6 +305,31 @@ fun OrganizerTopBar(
                             tint = if (slideshowActive) FujiPrimaryDark else FujiPrimary
                         )
                     }
+
+                    // 「画像一覧⇔分類一覧」切替ボタン。選択モード中は同じ場所が「分類登録」
+                    // (画像追加モード中はさらに「追加確定」)に役割を変える。ボタンを増やさず共用する。
+                    val classificationLabel = when {
+                        addModeActive -> "追加確定"
+                        selectionMode -> "分類登録"
+                        isClassificationListMode -> "画像一覧"
+                        else -> "分類一覧"
+                    }
+                    val classificationIcon = when {
+                        selectionMode -> Icons.Filled.CheckCircle
+                        isClassificationListMode -> Icons.Filled.PhotoLibrary
+                        else -> Icons.Filled.Category
+                    }
+                    FilterChip(
+                        selected = isClassificationListMode && !selectionMode,
+                        onClick = onClassificationButtonClick,
+                        label = { Text(classificationLabel) },
+                        leadingIcon = { Icon(classificationIcon, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                        modifier = Modifier.padding(start = 4.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = FujiPrimary,
+                            selectedLabelColor = Color.White
+                        )
+                    )
                 }
             }
 

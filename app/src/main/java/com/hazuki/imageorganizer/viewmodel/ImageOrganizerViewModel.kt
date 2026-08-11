@@ -6,6 +6,8 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.hazuki.imageorganizer.data.ClassificationGroup
+import com.hazuki.imageorganizer.data.ClassificationStore
 import com.hazuki.imageorganizer.data.ImageItem
 import com.hazuki.imageorganizer.data.ImageRepository
 import com.hazuki.imageorganizer.data.LoadProgress
@@ -38,6 +40,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     private val repository = ImageRepository(application)
     private val fileOps = FileOperations(application)
     private val recentStore = RecentFoldersStore(application)
+    private val classificationStore = ClassificationStore(application)
 
     private val _uiState = MutableStateFlow(OrganizerUiState())
     val uiState: StateFlow<OrganizerUiState> = _uiState.asStateFlow()
@@ -67,6 +70,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     init {
         _uiState.update { it.copy(recentEntries = recentStore.getHistory()) }
+        val savedGroups = classificationStore.loadGroups()
+        if (savedGroups.isNotEmpty()) {
+            _uiState.update { it.copy(classificationGroups = savedGroups) }
+        }
         val last = recentStore.getLastOpened()
         if (last == null) {
             loadDocumentsFolder()
@@ -302,18 +309,27 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     // ソート / 一覧表示
     // ------------------------------------------------------------------
 
-    private fun sortedImages(sortOption: SortOption): List<ImageItem> {
+    private fun sortedImages(sortOption: SortOption): List<ImageItem> = sortImageList(allImages, sortOption)
+
+    /**
+     * 任意の画像リストを指定のソート条件で並べ替える共通ヘルパー。
+     * ・通常の一覧(allImages)のソート
+     * ・グループ内画面(GroupDetailScreen)でのグループごとのソート
+     * ・分類一覧でのカテゴリ表示順の判定
+     * の3箇所で共用する。
+     */
+    private fun sortImageList(images: List<ImageItem>, sortOption: SortOption): List<ImageItem> {
         return when (sortOption) {
-            SortOption.NAME_ASC -> allImages.sortedBy { it.displayName.lowercase() }
-            SortOption.NAME_DESC -> allImages.sortedByDescending { it.displayName.lowercase() }
-            SortOption.SIZE_ASC -> allImages.sortedBy { it.sizeBytes }
-            SortOption.SIZE_DESC -> allImages.sortedByDescending { it.sizeBytes }
-            SortOption.DATE_ASC -> allImages.sortedBy { it.dateModifiedEpochSec }
-            SortOption.DATE_DESC -> allImages.sortedByDescending { it.dateModifiedEpochSec }
-            SortOption.TAKEN_ASC -> allImages.sortedBy { it.effectiveTakenEpochMillis }
-            SortOption.TAKEN_DESC -> allImages.sortedByDescending { it.effectiveTakenEpochMillis }
-            SortOption.TYPE_ASC -> allImages.sortedBy { it.extension }
-            SortOption.TYPE_DESC -> allImages.sortedByDescending { it.extension }
+            SortOption.NAME_ASC -> images.sortedBy { it.displayName.lowercase() }
+            SortOption.NAME_DESC -> images.sortedByDescending { it.displayName.lowercase() }
+            SortOption.SIZE_ASC -> images.sortedBy { it.sizeBytes }
+            SortOption.SIZE_DESC -> images.sortedByDescending { it.sizeBytes }
+            SortOption.DATE_ASC -> images.sortedBy { it.dateModifiedEpochSec }
+            SortOption.DATE_DESC -> images.sortedByDescending { it.dateModifiedEpochSec }
+            SortOption.TAKEN_ASC -> images.sortedBy { it.effectiveTakenEpochMillis }
+            SortOption.TAKEN_DESC -> images.sortedByDescending { it.effectiveTakenEpochMillis }
+            SortOption.TYPE_ASC -> images.sortedBy { it.extension }
+            SortOption.TYPE_DESC -> images.sortedByDescending { it.extension }
         }
     }
 
@@ -324,6 +340,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      */
     private fun applyDisplayList() {
         reconcileSelection()
+        reconcileClassification()
         val state = _uiState.value
         val sorted = sortedImages(state.sortOption)
 
@@ -596,8 +613,22 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     fun clearSelection() {
-        _uiState.update { it.copy(selectionMode = false, selectedIds = emptySet(), currentJumpIndex = null) }
+        val wasAddMode = _uiState.value.addModeActive
+        _uiState.update {
+            it.copy(
+                selectionMode = false,
+                selectedIds = emptySet(),
+                currentJumpIndex = null,
+                addModeActive = false,
+                addModeTargetKey = null,
+                addModeCategory = null
+            )
+        }
         jumpCursorIndex = -1
+        // 「画像追加」モード中に選択解除(=キャンセル)された場合は、グループ内画面に戻す
+        if (wasAddMode) {
+            _uiState.update { it.copy(screenMode = ScreenMode.GROUP_DETAIL) }
+        }
     }
 
     /**
@@ -927,6 +958,358 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun setSlideshowInterval(interval: SlideshowInterval) {
         _uiState.update { it.copy(slideshowInterval = interval) }
         if (_uiState.value.slideshowActive) runSlideshowLoop() // 間隔変更を即反映
+    }
+
+    /** 分類一覧でカテゴリの代表画像を長押し → そのカテゴリ全体(例: C_01→C_02→C_03)を通しで再生 */
+    fun startCategorySlideshow(category: Char) {
+        val groups = _uiState.value.classificationGroups
+            .filter { it.category == category }
+            .sortedBy { it.sequence }
+        val idsInOrder = groups.flatMap { it.imageIds }
+        val entries = idsInOrder.mapNotNull { id -> allImages.firstOrNull { it.id == id } }
+        if (entries.isEmpty()) return
+        _uiState.update { it.copy(slideshowActive = true, slideshowIndex = 0, slideshowEntries = entries) }
+        runSlideshowLoop()
+    }
+
+    /** グループ内画面のスライドショーボタン → そのグループ単体の画像だけ再生 */
+    fun startGroupSlideshow() {
+        val entries = _uiState.value.groupDetailEntries
+        if (entries.isEmpty()) return
+        _uiState.update { it.copy(slideshowActive = true, slideshowIndex = 0, slideshowEntries = entries) }
+        runSlideshowLoop()
+    }
+
+    // ------------------------------------------------------------------
+    // 手動グルーピング(分類)機能
+    // ------------------------------------------------------------------
+
+    /** classificationGroups が変わるたびに呼ぶ。保存 + 派生状態(groupedImageIds / classificationTiles)の再構築を行う。 */
+    private fun rebuildClassificationDerivedState(groups: List<ClassificationGroup>) {
+        classificationStore.saveGroups(groups)
+
+        val groupedIndex = mutableMapOf<Long, Char>()
+        groups.forEach { g -> g.imageIds.forEach { id -> groupedIndex[id] = g.category } }
+
+        // カテゴリごとに島状にまとめつつ、カテゴリの並び順は「現在のソート条件」を
+        // 各カテゴリの代表(連番が最も若いグループの代表画像)に適用して決める。
+        val sortOption = _uiState.value.sortOption
+        val byCategory = groups.groupBy { it.category }
+        val anchorPerCategory = byCategory.mapValues { (_, gs) ->
+            val first = gs.minByOrNull { it.sequence }
+            first?.imageIds?.firstOrNull()?.let { id -> allImages.firstOrNull { it.id == id } }
+        }
+        val orderedCategories = anchorPerCategory.entries
+            .filter { it.value != null }
+            .map { it.key to it.value!! }
+            .let { list ->
+                val sortedAnchors = sortImageList(list.map { it.second }, sortOption)
+                sortedAnchors.mapNotNull { anchor -> list.firstOrNull { it.second.id == anchor.id }?.first }
+            }
+        // 代表画像が見つからなかった(画像が消えた等の)カテゴリは末尾に回す
+        val remaining = byCategory.keys.filter { it !in orderedCategories }
+        val categoryOrder = orderedCategories + remaining
+
+        val tiles = categoryOrder.flatMap { category ->
+            byCategory[category].orEmpty().sortedBy { it.sequence }.map { g ->
+                val rep = g.effectiveRepresentativeId?.let { id -> allImages.firstOrNull { it.id == id } }
+                ClassificationTile(group = g, representative = rep)
+            }
+        }
+
+        _uiState.update {
+            it.copy(
+                classificationGroups = groups,
+                groupedImageIds = groupedIndex,
+                classificationTiles = tiles
+            )
+        }
+    }
+
+    /**
+     * allImagesが更新されるたび(reloadCurrentFolder完了時など)に呼ぶ。
+     * 既に端末上から無くなった画像IDをグループから取り除き、その結果0枚になったグループは自動削除する。
+     * (要件定義 Q19: 移動・削除されたら、グループ所属情報も自動的に消える)
+     */
+    private fun reconcileClassification() {
+        val current = _uiState.value.classificationGroups
+        if (current.isEmpty()) return
+        val validIds = allImages.map { it.id }.toSet()
+        val cleaned = current
+            .map { g -> g.copy(imageIds = g.imageIds.filter { it in validIds }) }
+            .filter { it.imageIds.isNotEmpty() } // 空になったグループは自動削除(Q13)
+        if (cleaned != current) {
+            rebuildClassificationDerivedState(cleaned)
+        } else {
+            // 画像自体は変わらなくても、代表画像やソートの再計算だけは反映させておく
+            rebuildClassificationDerivedState(current)
+        }
+    }
+
+    /** 画面上部の「画像一覧⇔分類一覧」ボタン(選択モード中でない時の通常動作) */
+    fun toggleScreenMode() {
+        val state = _uiState.value
+        if (state.selectionMode) return // 選択モード中は「分類登録」ボタンとして扱う(TopBar側で分岐)
+        _uiState.update {
+            it.copy(screenMode = if (state.screenMode == ScreenMode.GALLERY) ScreenMode.CLASSIFICATION_LIST else ScreenMode.GALLERY)
+        }
+    }
+
+    /** カテゴリ`category`における「次の連番:既存テーマ名」のプレビュー文字列(例: "C_04:神社")を返す。ダイアログのプルダウン表示に使う。 */
+    fun previewForCategory(category: Char): String {
+        val groups = _uiState.value.classificationGroups.filter { it.category == category }
+        val nextSeq = (groups.maxOfOrNull { it.sequence } ?: 0) + 1
+        val key = "${category}_${nextSeq.toString().padStart(2, '0')}"
+        val themeName = groups.lastOrNull { it.name.isNotBlank() }?.name
+        return if (themeName != null) "$key:$themeName" else key
+    }
+
+    /**
+     * 選択モード中の上部バーボタン。「分類登録」ダイアログを開く。
+     * (画像追加モード中は openAddModeConfirmDialogは無く、別途 confirmAddToGroup() を直接呼ぶ動線になる)
+     */
+    fun openNameDialogForNewGroup() {
+        val ids = _uiState.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        _uiState.update {
+            it.copy(
+                nameDialogVisible = true,
+                nameDialogEditingKey = null,
+                nameDialogPendingImageIds = ids
+            )
+        }
+    }
+
+    /** 分類一覧でグループ名を長押し→リネームダイアログを開く */
+    fun openNameDialogForRename(groupKey: String) {
+        val group = _uiState.value.classificationGroups.firstOrNull { it.key == groupKey } ?: return
+        _uiState.update {
+            it.copy(
+                nameDialogVisible = true,
+                nameDialogEditingKey = groupKey,
+                nameDialogPendingImageIds = emptyList()
+            )
+        }
+    }
+
+    fun dismissNameDialog() {
+        _uiState.update {
+            it.copy(nameDialogVisible = false, nameDialogEditingKey = null, nameDialogPendingImageIds = emptyList())
+        }
+    }
+
+    /**
+     * 名前ダイアログのOK。
+     * ・新規作成(nameDialogEditingKey == null): 選んだ画像で新しいグループを作る
+     * ・リネーム(nameDialogEditingKey != null): 既存グループの名前(＋必要ならカテゴリ)を変更する
+     */
+    fun confirmNameDialog(category: Char, name: String) {
+        val state = _uiState.value
+        val editingKey = state.nameDialogEditingKey
+        val groups = state.classificationGroups.toMutableList()
+
+        if (editingKey == null) {
+            // 新規作成: 既にどれかのグループに入っている画像は除外する(1画像1グループの原則)
+            val alreadyGrouped = state.groupedImageIds.keys
+            val targetIds = state.nameDialogPendingImageIds.filter { it !in alreadyGrouped }
+            if (targetIds.isEmpty()) {
+                dismissNameDialog()
+                return
+            }
+            val nextSeq = (groups.filter { it.category == category }.maxOfOrNull { it.sequence } ?: 0) + 1
+            groups.add(ClassificationGroup(category = category, sequence = nextSeq, name = name, imageIds = targetIds))
+            rebuildClassificationDerivedState(groups)
+            dismissNameDialog()
+            clearSelection()
+        } else {
+            val index = groups.indexOfFirst { it.key == editingKey }
+            if (index < 0) {
+                dismissNameDialog()
+                return
+            }
+            val old = groups[index]
+            if (old.category == category) {
+                groups[index] = old.copy(name = name)
+            } else {
+                // カテゴリ自体を変更する場合は、新しいカテゴリの連番を振り直す
+                val nextSeq = (groups.filter { it.category == category }.maxOfOrNull { it.sequence } ?: 0) + 1
+                groups[index] = old.copy(category = category, sequence = nextSeq, name = name)
+            }
+            rebuildClassificationDerivedState(groups)
+            dismissNameDialog()
+            // グループ内画面を見ている最中にリネームした場合、activeGroupKeyを新しいキーに追随させる
+            if (state.activeGroupKey == editingKey) {
+                openGroupDetail(groups[index].key)
+            }
+        }
+    }
+
+    /** 分類一覧でタグをタップ → グループ内画面へ */
+    fun openGroupDetail(groupKey: String) {
+        val group = _uiState.value.classificationGroups.firstOrNull { it.key == groupKey } ?: return
+        val sorted = sortImageList(allImages.filter { it.id in group.imageIds }, group.sortOption)
+        _uiState.update {
+            it.copy(
+                screenMode = ScreenMode.GROUP_DETAIL,
+                activeGroupKey = groupKey,
+                groupDetailEntries = sorted,
+                groupDetailSelectedIds = emptySet()
+            )
+        }
+    }
+
+    /** グループ内画面の「戻る」。分類一覧に戻る。 */
+    fun closeGroupDetail() {
+        _uiState.update {
+            it.copy(screenMode = ScreenMode.CLASSIFICATION_LIST, activeGroupKey = null, groupDetailSelectedIds = emptySet())
+        }
+    }
+
+    /** グループ内画面専用のソート変更(グループごとに個別記憶する)。 */
+    fun setGroupDetailSortOption(option: SortOption) {
+        val key = _uiState.value.activeGroupKey ?: return
+        val groups = _uiState.value.classificationGroups.toMutableList()
+        val index = groups.indexOfFirst { it.key == key }
+        if (index < 0) return
+        groups[index] = groups[index].copy(sortOption = option)
+        rebuildClassificationDerivedState(groups)
+        val sorted = sortImageList(allImages.filter { it.id in groups[index].imageIds }, option)
+        _uiState.update { it.copy(groupDetailEntries = sorted) }
+    }
+
+    /** グループ内画面で画像を長押し/タップして「削除対象」として選ぶ(通常一覧の選択とは別管理)。 */
+    fun toggleGroupDetailSelected(imageId: Long) {
+        _uiState.update { state ->
+            val newSet = state.groupDetailSelectedIds.toMutableSet()
+            if (!newSet.add(imageId)) newSet.remove(imageId)
+            state.copy(groupDetailSelectedIds = newSet)
+        }
+    }
+
+    fun clearGroupDetailSelection() {
+        _uiState.update { it.copy(groupDetailSelectedIds = emptySet()) }
+    }
+
+    /**
+     * 「サムネ指定」。選んだ画像を、このグループの分類一覧での代表画像(サムネイル)にする。
+     * (imageIdsの並び順自体は変えず、representativeIdだけを差し替える。
+     *  グループから外れた場合は自動的に1枚目へフォールバックする -> ClassificationGroup.effectiveRepresentativeId)
+     */
+    fun setGroupThumbnail(imageId: Long) {
+        val state = _uiState.value
+        val key = state.activeGroupKey ?: return
+        val groups = state.classificationGroups.toMutableList()
+        val index = groups.indexOfFirst { it.key == key }
+        if (index < 0) return
+        if (imageId !in groups[index].imageIds) return
+        groups[index] = groups[index].copy(representativeId = imageId)
+        rebuildClassificationDerivedState(groups)
+        _uiState.update { it.copy(groupDetailSelectedIds = emptySet()) }
+    }
+
+    /**
+     * 「画像削除」ボタン。選んだ画像をグループから外すだけ(端末上のファイルは消えない)。
+     * 外した結果グループが空になったら、そのグループ自体を削除する。
+     */
+    fun removeSelectedFromGroup() {
+        val state = _uiState.value
+        val key = state.activeGroupKey ?: return
+        val removeIds = state.groupDetailSelectedIds
+        if (removeIds.isEmpty()) return
+
+        val groups = state.classificationGroups.toMutableList()
+        val index = groups.indexOfFirst { it.key == key }
+        if (index < 0) return
+        val updated = groups[index].copy(imageIds = groups[index].imageIds.filter { it !in removeIds })
+
+        if (updated.imageIds.isEmpty()) {
+            groups.removeAt(index)
+            rebuildClassificationDerivedState(groups)
+            closeGroupDetail()
+        } else {
+            groups[index] = updated
+            rebuildClassificationDerivedState(groups)
+            val sorted = sortImageList(allImages.filter { it.id in updated.imageIds }, updated.sortOption)
+            _uiState.update { it.copy(groupDetailEntries = sorted, groupDetailSelectedIds = emptySet()) }
+        }
+    }
+
+    /**
+     * 「画像追加」ボタン。通常の画像一覧に切り替え、既存の選択モードの仕組み(長押し範囲選択等)を
+     * そのまま流用して画像を選んでもらう。ImageGrid側は groupedImageIds/addModeCategory を見て、
+     * 他カテゴリの画像を暗く表示・選択不可にする。
+     */
+    fun enterAddMode() {
+        val key = _uiState.value.activeGroupKey ?: return
+        val group = _uiState.value.classificationGroups.firstOrNull { it.key == key } ?: return
+        _uiState.update {
+            it.copy(
+                screenMode = ScreenMode.GALLERY,
+                selectionMode = true,
+                selectedIds = emptySet(),
+                addModeActive = true,
+                addModeTargetKey = key,
+                addModeCategory = group.category
+            )
+        }
+    }
+
+    /**
+     * 画像追加モードでの「追加確定」(TopBarの「分類登録」ボタンが、addModeActive中はこちらに差し替わる)。
+     * 選んだ画像を対象グループに追加する。同カテゴリの別グループから移した場合は、そのグループの画像から
+     * 取り除く(=グループ統合)。移した結果、元グループが空になれば自動削除する(欠番は許容/Q13)。
+     * 連番は「操作元(追加ボタンを押した側=対象グループ)」のものをそのまま維持する。
+     */
+    fun confirmAddToGroup() {
+        val state = _uiState.value
+        val targetKey = state.addModeTargetKey ?: return
+        val category = state.addModeCategory ?: return
+        val selected = state.selectedIds
+        if (selected.isEmpty()) {
+            clearSelection()
+            return
+        }
+
+        val groups = state.classificationGroups.toMutableList()
+        val targetIndex = groups.indexOfFirst { it.key == targetKey }
+        if (targetIndex < 0) {
+            clearSelection()
+            return
+        }
+
+        // 選んだ画像を、まず「他のグループ(同カテゴリの別グループ)」から取り除く
+        for (i in groups.indices) {
+            if (i == targetIndex) continue
+            if (groups[i].category != category) continue
+            val remaining = groups[i].imageIds.filter { it !in selected }
+            groups[i] = groups[i].copy(imageIds = remaining)
+        }
+        // 空になった他グループは削除(欠番は許容する)
+        val cleanedOthers = groups.filterIndexed { i, g -> i == targetIndex || g.imageIds.isNotEmpty() }
+        val newTargetIndex = cleanedOthers.indexOfFirst { it.key == targetKey }
+
+        // 対象グループに追加(重複は無視。既存の並び順の後ろに追加する)
+        val target = cleanedOthers[newTargetIndex]
+        val mergedIds = (target.imageIds + selected).distinct()
+        val finalGroups = cleanedOthers.toMutableList()
+        finalGroups[newTargetIndex] = target.copy(imageIds = mergedIds)
+
+        rebuildClassificationDerivedState(finalGroups)
+
+        val sorted = sortImageList(allImages.filter { it.id in mergedIds }, target.sortOption)
+        _uiState.update {
+            it.copy(
+                screenMode = ScreenMode.GROUP_DETAIL,
+                activeGroupKey = targetKey,
+                groupDetailEntries = sorted,
+                groupDetailSelectedIds = emptySet(),
+                selectionMode = false,
+                selectedIds = emptySet(),
+                addModeActive = false,
+                addModeTargetKey = null,
+                addModeCategory = null
+            )
+        }
     }
 
     private fun stopSlideshow() {

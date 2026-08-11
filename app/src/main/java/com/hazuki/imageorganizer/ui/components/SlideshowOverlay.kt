@@ -4,10 +4,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.clickable
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -56,32 +58,43 @@ fun SlideshowOverlay(
             modifier = Modifier.fillMaxSize()
         )
 
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .background(Color.White) // 反転: 白背景+黒文字
-                // ステータスバー(時計・電波・バッテリー等)と重ならないよう、上に余白を確保する
-                .statusBarsPadding()
-                .padding(8.dp),
-            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.Center
+        // ステータスバー(時計・電波・バッテリー)の裏側に白い帯が回り込まないよう、
+        // まずステータスバー分の高さだけ「黒」を敷いてから、その下に操作バー(白背景)を置く。
+        // (前回、白背景→statusBarsPaddingの順にしていたため、白がステータスバーの裏まで
+        //  広がってシステムアイコンが見えなくなっていた。他画面と同じ「黒帯が先」の方式に統一)
+        androidx.compose.foundation.layout.Column(
+            modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth()
         ) {
-            SlideshowInterval.values().forEach { opt ->
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black)
+                    .windowInsetsTopHeight(WindowInsets.statusBars)
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.White) // 反転: 白背景+黒文字
+                    .padding(8.dp),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.Center
+            ) {
+                SlideshowInterval.values().forEach { opt ->
+                    Text(
+                        text = "${opt.seconds}秒",
+                        color = if (opt == interval) Color.Black else Color.Gray,
+                        modifier = Modifier
+                            .padding(horizontal = 12.dp)
+                            .clickable { onIntervalSelected(opt) }
+                    )
+                }
                 Text(
-                    text = "${opt.seconds}秒",
-                    color = if (opt == interval) Color.Black else Color.Gray,
+                    text = "終了",
+                    color = Color.Red,
                     modifier = Modifier
                         .padding(horizontal = 12.dp)
-                        .clickable { onIntervalSelected(opt) }
+                        .clickable { onStop() }
                 )
             }
-            Text(
-                text = "終了",
-                color = Color.Red,
-                modifier = Modifier
-                    .padding(horizontal = 12.dp)
-                    .clickable { onStop() }
-            )
         }
     }
 }

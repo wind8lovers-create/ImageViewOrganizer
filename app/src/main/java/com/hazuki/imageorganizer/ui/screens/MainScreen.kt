@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hazuki.imageorganizer.data.ThumbnailSize
+import com.hazuki.imageorganizer.ui.components.ClassificationNameDialog
 import com.hazuki.imageorganizer.ui.components.FullscreenViewer
 import com.hazuki.imageorganizer.ui.components.ImageGrid
 import com.hazuki.imageorganizer.ui.components.OrganizerBottomBar
@@ -38,6 +39,7 @@ import com.hazuki.imageorganizer.ui.components.SlideshowOverlay
 import com.hazuki.imageorganizer.ui.components.SortBottomSheet
 import com.hazuki.imageorganizer.ui.theme.WashiBackground
 import com.hazuki.imageorganizer.viewmodel.ImageOrganizerViewModel
+import com.hazuki.imageorganizer.viewmodel.ScreenMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -138,6 +140,8 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
             containerColor = androidx.compose.ui.graphics.Color.Transparent,
             snackbarHost = { SnackbarHost(snackbarHostState) },
             topBar = {
+                // グループ内画面(GROUP_DETAIL)は専用のヘッダーを持つため、通常の上部バーは表示しない
+                if (state.screenMode != ScreenMode.GROUP_DETAIL) {
                 OrganizerTopBar(
                     folderLabel = state.currentFolderLabel,
                     isZipMode = state.isZipMode,
@@ -174,10 +178,24 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                         viewModel.setThumbnailSize(
                             if (state.thumbnailSize == ThumbnailSize.SMALL) ThumbnailSize.LARGE else ThumbnailSize.SMALL
                         )
+                    },
+                    isClassificationListMode = state.screenMode == ScreenMode.CLASSIFICATION_LIST,
+                    selectionMode = state.selectionMode,
+                    addModeActive = state.addModeActive,
+                    onClassificationButtonClick = {
+                        when {
+                            state.addModeActive -> viewModel.confirmAddToGroup()
+                            state.selectionMode -> viewModel.openNameDialogForNewGroup()
+                            else -> viewModel.toggleScreenMode()
+                        }
                     }
                 )
+                }
             },
             bottomBar = {
+                // 分類一覧・グループ内画面では、通常の移動/削除などの下部バーは表示しない
+                // (分類一覧はタップして中に入るだけ、グループ内画面は専用のバーを内包しているため)
+                if (state.screenMode == ScreenMode.GALLERY) {
                 OrganizerBottomBar(
                     selectionMode = state.selectionMode,
                     selectedCount = state.selectedIds.size,
@@ -194,40 +212,91 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     onJumpToSelectedClick = { viewModel.jumpToNextSelected() },
                     onJumpToSelectedLongClick = { viewModel.jumpToFirstSelected() },
                     currentJumpIndex = state.currentJumpIndex,
-                    onClearSelectionClick = { viewModel.clearSelection() }
+                    onClearSelectionClick = { viewModel.clearSelection() },
+                    addModeActive = state.addModeActive
                 )
+                }
             }
         ) { padding ->
             Column(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    if (state.isLoading) {
-                        CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                    } else if (state.entries.isEmpty()) {
-                        EmptyFolderMessage(
-                            onOpenFolder = { folderPickerLauncher.launch(null) },
-                            modifier = Modifier.align(Alignment.Center)
-                        )
-                    } else {
-                        ImageGrid(
-                            entries = state.entries,
-                            thumbnailSize = state.thumbnailSize,
-                            selectedIds = state.selectedIds,
-                            selectionMode = state.selectionMode,
-                            gridState = gridState,
-                            onTap = { index ->
-                                val id = state.entries.getOrNull(index)?.id
-                                if (state.selectionMode) {
-                                    if (id != null) viewModel.toggleSelected(id)
+                    when (state.screenMode) {
+                        ScreenMode.GALLERY -> {
+                            if (state.isLoading) {
+                                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                            } else if (state.entries.isEmpty()) {
+                                EmptyFolderMessage(
+                                    onOpenFolder = { folderPickerLauncher.launch(null) },
+                                    modifier = Modifier.align(Alignment.Center)
+                                )
+                            } else {
+                                // 選択モード中(通常の分類登録、または画像追加モード)は、
+                                // 既に他のグループに入っている画像を暗く表示・選択不可にする(要件定義Q2)。
+                                // 画像追加モード中は、対象と同じカテゴリの画像だけは明るく表示・選択可能にする(グループ統合)。
+                                val dimmedIds = if (state.selectionMode) {
+                                    state.groupedImageIds
+                                        .filterKeys { id ->
+                                            !(state.addModeActive && state.groupedImageIds[id] == state.addModeCategory)
+                                        }
+                                        .keys
                                 } else {
-                                    viewModel.openFullscreen(index)
+                                    emptySet()
                                 }
-                            },
-                            onLongPress = { index ->
-                                val id = state.entries.getOrNull(index)?.id
-                                if (id != null) viewModel.handleLongPress(id)
-                            },
-                            modifier = Modifier.fillMaxSize().padding(padding)
-                        )
+                                ImageGrid(
+                                    entries = state.entries,
+                                    thumbnailSize = state.thumbnailSize,
+                                    selectedIds = state.selectedIds,
+                                    selectionMode = state.selectionMode,
+                                    gridState = gridState,
+                                    onTap = { index ->
+                                        val id = state.entries.getOrNull(index)?.id
+                                        if (state.selectionMode) {
+                                            if (id != null) viewModel.toggleSelected(id)
+                                        } else {
+                                            viewModel.openFullscreen(index)
+                                        }
+                                    },
+                                    onLongPress = { index ->
+                                        val id = state.entries.getOrNull(index)?.id
+                                        if (id != null) viewModel.handleLongPress(id)
+                                    },
+                                    groupedImageIds = state.groupedImageIds,
+                                    dimmedIds = dimmedIds,
+                                    modifier = Modifier.fillMaxSize().padding(padding)
+                                )
+                            }
+                        }
+                        ScreenMode.CLASSIFICATION_LIST -> {
+                            ClassificationListScreen(
+                                tiles = state.classificationTiles,
+                                thumbnailSize = state.thumbnailSize,
+                                onTileTap = { key -> viewModel.openGroupDetail(key) },
+                                onTileLongPress = { category -> viewModel.startCategorySlideshow(category) },
+                                onNameLongPress = { key -> viewModel.openNameDialogForRename(key) },
+                                modifier = Modifier.fillMaxSize().padding(padding)
+                            )
+                        }
+                        ScreenMode.GROUP_DETAIL -> {
+                            val group = state.classificationGroups.firstOrNull { it.key == state.activeGroupKey }
+                            GroupDetailScreen(
+                                groupDisplayName = group?.displayName ?: "",
+                                entries = state.groupDetailEntries,
+                                thumbnailSize = state.thumbnailSize,
+                                selectedIds = state.groupDetailSelectedIds,
+                                siblingTiles = state.classificationTiles.filter { it.group.category == group?.category },
+                                currentGroupKey = state.activeGroupKey ?: "",
+                                onBack = { viewModel.closeGroupDetail() },
+                                onTapImage = { index -> viewModel.openFullscreen(index) },
+                                onToggleSelected = { id -> viewModel.toggleGroupDetailSelected(id) },
+                                onSortClick = { viewModel.toggleSortSheet(true) },
+                                onAddImagesClick = { viewModel.enterAddMode() },
+                                onDeleteSelectedClick = { viewModel.removeSelectedFromGroup() },
+                                onSlideshowClick = { viewModel.startGroupSlideshow() },
+                                onSetThumbnailClick = { id -> viewModel.setGroupThumbnail(id) },
+                                onPageSettled = { key -> viewModel.openGroupDetail(key) },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                 }
             }
@@ -235,16 +304,29 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
 
         if (state.sortSheetVisible) {
             SortBottomSheet(
-                currentSort = state.sortOption,
+                currentSort = if (state.screenMode == ScreenMode.GROUP_DETAIL) {
+                    state.classificationGroups.firstOrNull { it.key == state.activeGroupKey }?.sortOption ?: state.sortOption
+                } else {
+                    state.sortOption
+                },
                 sheetState = sheetState,
-                onSelect = { viewModel.setSortOption(it) },
+                onSelect = {
+                    if (state.screenMode == ScreenMode.GROUP_DETAIL) {
+                        viewModel.setGroupDetailSortOption(it)
+                    } else {
+                        viewModel.setSortOption(it)
+                    }
+                    viewModel.toggleSortSheet(false)
+                },
                 onDismiss = { viewModel.toggleSortSheet(false) }
             )
         }
 
         state.fullscreenIndex?.let { idx ->
+            // グループ内画面ではそのグループの画像リスト、それ以外は通常の一覧を対象にする
+            val fullscreenSource = if (state.screenMode == ScreenMode.GROUP_DETAIL) state.groupDetailEntries else state.entries
             FullscreenViewer(
-                entries = state.entries,
+                entries = fullscreenSource,
                 startIndex = idx,
                 onDismiss = { viewModel.closeFullscreen() }
             )
@@ -258,6 +340,20 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                 onTapAdvance = { viewModel.advanceSlideshow() },
                 onIntervalSelected = { viewModel.setSlideshowInterval(it) },
                 onStop = { viewModel.toggleSlideshow(gridState.firstVisibleItemIndex) }
+            )
+        }
+
+        // 分類登録・リネーム共用ダイアログ
+        if (state.nameDialogVisible) {
+            val editingKey = state.nameDialogEditingKey
+            val editingGroup = editingKey?.let { key -> state.classificationGroups.firstOrNull { it.key == key } }
+            ClassificationNameDialog(
+                title = if (editingKey == null) "分類登録" else "グループ名の変更",
+                initialCategory = editingGroup?.category ?: 'A',
+                initialName = editingGroup?.name ?: "",
+                previewFor = { category -> viewModel.previewForCategory(category) },
+                onConfirm = { category, name -> viewModel.confirmNameDialog(category, name) },
+                onDismiss = { viewModel.dismissNameDialog() }
             )
         }
     }

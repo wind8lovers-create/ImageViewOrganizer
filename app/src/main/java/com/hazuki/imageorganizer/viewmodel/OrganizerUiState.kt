@@ -1,9 +1,24 @@
 package com.hazuki.imageorganizer.viewmodel
 
+import com.hazuki.imageorganizer.data.ClassificationGroup
 import com.hazuki.imageorganizer.data.ImageItem
 import com.hazuki.imageorganizer.data.RecentEntry
 import com.hazuki.imageorganizer.data.SortOption
 import com.hazuki.imageorganizer.data.ThumbnailSize
+
+/** 画面モード。上部バーの「画像一覧⇔分類一覧」ボタンで GALLERY / CLASSIFICATION_LIST を行き来し、
+ *  分類一覧でタグをタップすると GROUP_DETAIL に入る。 */
+enum class ScreenMode {
+    GALLERY,            // 通常の画像一覧
+    CLASSIFICATION_LIST,// 分類一覧(A〜Zカテゴリごとに島状に並ぶグリッド)
+    GROUP_DETAIL        // 1つのグループの中(画像追加/削除ができる)
+}
+
+/** 分類一覧グリッドの1タイル分の表示用データ(グループ本体+代表画像)。 */
+data class ClassificationTile(
+    val group: ClassificationGroup,
+    val representative: ImageItem?
+)
 
 enum class SlideshowInterval(val seconds: Int) {
     S1(1), S3(3), S5(5), S9(9)
@@ -63,5 +78,25 @@ data class OrganizerUiState(
     val styleMatchThreshold: Float = 0f, // 0.0〜100.0。0はフィルタなし(RGB5色パレットの一致度による絞り込みをしない)
     val matchedCount: Int = 0, // 直近の絞り込みで一致した枚数(設定変更の効果を確認しやすくするため)
 
-    val snackbarMessage: String? = null
+    val snackbarMessage: String? = null,
+
+    // ---- 手動グルーピング(分類)機能 ----
+    val screenMode: ScreenMode = ScreenMode.GALLERY,
+    val classificationGroups: List<ClassificationGroup> = emptyList(),
+    val classificationTiles: List<ClassificationTile> = emptyList(), // 分類一覧グリッド表示用(カテゴリごとに島状にまとめ済み)
+    val groupedImageIds: Map<Long, Char> = emptyMap(), // 画像ID -> 所属カテゴリ(枠色・暗表示の判定に使う)
+
+    val activeGroupKey: String? = null, // GROUP_DETAIL 表示中のグループキー(例:"C_04")
+    val groupDetailEntries: List<ImageItem> = emptyList(), // そのグループの画像一覧(グループごとのソート状態を反映済み)
+    val groupDetailSelectedIds: Set<Long> = emptySet(), // グループ内画面での「削除対象として選んだ画像」(通常一覧の選択とは別管理)
+
+    // 分類登録・リネーム共用ダイアログ
+    val nameDialogVisible: Boolean = false,
+    val nameDialogEditingKey: String? = null, // null=新規グループ作成、非null=既存グループのリネーム
+    val nameDialogPendingImageIds: List<Long> = emptyList(), // 新規作成時、確定したら所属させる画像ID
+
+    // 画像追加モード(グループ内画面の「画像追加」ボタン→通常一覧に切り替えて同カテゴリのみ選択可能にする)
+    val addModeActive: Boolean = false,
+    val addModeTargetKey: String? = null, // 追加先グループのキー
+    val addModeCategory: Char? = null // このカテゴリの画像だけ選択可能にする
 )

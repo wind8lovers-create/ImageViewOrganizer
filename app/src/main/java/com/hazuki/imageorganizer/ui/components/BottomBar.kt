@@ -48,6 +48,9 @@ fun OrganizerBottomBar(
     onJumpToSelectedLongClick: () -> Unit = {},
     currentJumpIndex: Int? = null,
     onClearSelectionClick: () -> Unit,
+    // 「画像追加」モード中(グループ内画面→通常一覧に切り替えて同カテゴリの画像を選ぶ最中)は、
+    // 誤って移動/削除などの操作をしてしまわないよう、専用のシンプルな行に差し替える。
+    addModeActive: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -57,7 +60,21 @@ fun OrganizerBottomBar(
         color = FujiSurfaceVariant,
         tonalElevation = 3.dp
     ) {
-        if (selectionMode) {
+        if (selectionMode && addModeActive) {
+            // 画像追加モード専用の行: 「同じカテゴリの画像を選んでください」の案内 + キャンセルのみ
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "同じカテゴリの画像を選択中(${selectedCount}枚)",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = FujiPrimaryDark
+                )
+                BottomBarAction(Icons.Filled.Close, "キャンセル", onClearSelectionClick)
+            }
+        } else if (selectionMode) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -66,9 +83,9 @@ fun OrganizerBottomBar(
                 // 読込・グループ計算が終わっていない状態で移動/削除/リネームを行うと、
                 // 内部データが未確定でクラッシュすることがあるため、完了するまで押せないようにする
                 BottomBarAction(Icons.Filled.DriveFileMove, "移動", onMoveClick, enabled = actionsEnabled)
-                BottomBarAction(Icons.Filled.FolderZip, "ZIP化", onZipClick, enabled = actionsEnabled)
+                BottomBarAction(Icons.Filled.FolderZip, "ZIP", onZipClick, enabled = actionsEnabled)
                 BottomBarAction(Icons.Filled.Delete, "削除", onDeleteClick, enabled = actionsEnabled)
-                BottomBarAction(Icons.Filled.DriveFileRenameOutline, "リネーム", onRenameSelectedClick, enabled = actionsEnabled)
+                BottomBarAction(Icons.Filled.DriveFileRenameOutline, "RN", onRenameSelectedClick, enabled = actionsEnabled)
                 // テキスト検索の「次を検索」のように、押すたびに選択中の画像の位置を順番に巡回する。
                 // 長押しで先頭に戻る機能を追加。
                 val jumpLabel = if (currentJumpIndex != null) "選択へ(${currentJumpIndex})" else "選択へ"

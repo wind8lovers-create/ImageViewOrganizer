@@ -337,7 +337,9 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                 entries = state.slideshowEntries,
                 currentIndex = state.slideshowIndex,
                 interval = state.slideshowInterval,
-                onTapAdvance = { viewModel.advanceSlideshow() },
+                paused = state.slideshowPaused,
+                onPauseToggle = { viewModel.toggleSlideshowPause() },
+                onPageSelected = { viewModel.updateSlideshowIndex(it) },
                 onIntervalSelected = { viewModel.setSlideshowInterval(it) },
                 onStop = { viewModel.toggleSlideshow(gridState.firstVisibleItemIndex) }
             )

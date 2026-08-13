@@ -20,8 +20,13 @@ data class ClassificationTile(
     val representative: ImageItem?
 )
 
-enum class SlideshowInterval(val seconds: Int) {
-    S1(1), S3(3), S5(5), S9(9)
+/** スライドショーの再生間隔設定。ユーザーの要望に合わせて0.3秒〜5.0秒の範囲を定義。 */
+enum class SlideshowInterval(val label: String, val seconds: Float) {
+    S03("0.3秒", 0.3f),
+    S05("0.5秒", 0.5f),
+    S08("0.8秒", 0.8f),
+    S20("2.0秒", 2.0f),
+    S50("5.0秒", 5.0f)
 }
 
 /**
@@ -59,7 +64,8 @@ data class OrganizerUiState(
     val fullscreenIndex: Int? = null, // nullでない場合、その位置の画像を全画面表示
 
     val slideshowActive: Boolean = false,
-    val slideshowInterval: SlideshowInterval = SlideshowInterval.S3,
+    val slideshowPaused: Boolean = false, // 一時停止中なら true
+    val slideshowInterval: SlideshowInterval = SlideshowInterval.S20,
     val slideshowIndex: Int = 0,
     // スライドショー開始時点で「選択中の画像だけ」を表示順のまま抜き出したリスト。
     // 選択が無い状態で開始した場合は、entries(表示中の全件)と同じ内容になる。

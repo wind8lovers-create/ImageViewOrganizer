@@ -942,17 +942,56 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
 
         _uiState.update {
-            it.copy(slideshowActive = true, slideshowIndex = startIndex, slideshowEntries = targetEntries)
+            it.copy(
+                slideshowActive = true,
+                slideshowPaused = false, // 開始時は必ず再生状態にする
+                slideshowIndex = startIndex,
+                slideshowEntries = targetEntries
+            )
         }
         runSlideshowLoop()
+    }
+
+    /**
+     * スライドショーの再生/一時停止を切り替える。
+     */
+    fun toggleSlideshowPause() {
+        val newState = !_uiState.value.slideshowPaused
+        _uiState.update { it.copy(slideshowPaused = newState) }
+        // 停止から再生に切り替えた場合は、即座にループを再開させる
+        if (!newState) runSlideshowLoop()
+    }
+
+    /**
+     * 手動でページをめくった際に、現在のインデックスを同期する。
+     * 同時に、自動再生のタイマーをリセットして「そこからまた指定秒数待つ」ようにする。
+     */
+    fun updateSlideshowIndex(index: Int) {
+        val count = _uiState.value.slideshowEntries.size
+        if (count == 0) return
+        _uiState.update { it.copy(slideshowIndex = index % count) }
+        // 手動操作されたらタイマーをリセット(操作した瞬間からカウントし直し)
+        if (_uiState.value.slideshowActive && !_uiState.value.slideshowPaused) {
+            runSlideshowLoop()
+        }
     }
 
     private fun runSlideshowLoop() {
         slideshowJob?.cancel()
         slideshowJob = viewModelScope.launch {
             while (_uiState.value.slideshowActive) {
-                kotlinx.coroutines.delay(_uiState.value.slideshowInterval.seconds * 1000L)
-                advanceSlideshow()
+                // 一時停止中は何もしない(whileループ自体は維持し、再生再開を待つ)
+                if (_uiState.value.slideshowPaused) {
+                    kotlinx.coroutines.delay(500) // 停止中は負荷をかけず少し待機
+                    continue
+                }
+                
+                kotlinx.coroutines.delay((_uiState.value.slideshowInterval.seconds * 1000).toLong())
+                
+                // 遅延中に一時停止された場合は、進めない
+                if (!_uiState.value.slideshowPaused) {
+                    advanceSlideshow()
+                }
             }
         }
     }
@@ -977,7 +1016,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         val idsInOrder = groups.flatMap { it.imageIds }
         val entries = idsInOrder.mapNotNull { id -> allImages.firstOrNull { it.id == id } }
         if (entries.isEmpty()) return
-        _uiState.update { it.copy(slideshowActive = true, slideshowIndex = 0, slideshowEntries = entries) }
+        _uiState.update { 
+            it.copy(
+                slideshowActive = true, 
+                slideshowPaused = false,
+                slideshowIndex = 0, 
+                slideshowEntries = entries
+            ) 
+        }
         runSlideshowLoop()
     }
 
@@ -985,7 +1031,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun startGroupSlideshow() {
         val entries = _uiState.value.groupDetailEntries
         if (entries.isEmpty()) return
-        _uiState.update { it.copy(slideshowActive = true, slideshowIndex = 0, slideshowEntries = entries) }
+        _uiState.update { 
+            it.copy(
+                slideshowActive = true, 
+                slideshowPaused = false,
+                slideshowIndex = 0, 
+                slideshowEntries = entries
+            ) 
+        }
         runSlideshowLoop()
     }
 

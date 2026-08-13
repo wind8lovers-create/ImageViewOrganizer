@@ -1,5 +1,6 @@
 package com.hazuki.imageorganizer.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -11,8 +12,29 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -24,47 +46,68 @@ import com.hazuki.imageorganizer.data.ImageItem
 import com.hazuki.imageorganizer.viewmodel.SlideshowInterval
 
 /**
- * スライドショー本体。タップで次の画像へ、長押しで一覧表示に復帰する。
- * 反転表示: 背景を黒、操作系ラベルは白文字反転で統一(押した瞬間に文字色が反転する仕様の表現)。
+ * パワーアップしたスライドショー画面。
+ * アルバムのように左右にめくれる(HorizontalPager)構造になり、一時停止や高速再生に対応。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SlideshowOverlay(
     entries: List<ImageItem>,
     currentIndex: Int,
     interval: SlideshowInterval,
-    onTapAdvance: () -> Unit,
+    paused: Boolean,
+    onPauseToggle: () -> Unit,
+    onPageSelected: (Int) -> Unit,
     onIntervalSelected: (SlideshowInterval) -> Unit,
     onStop: () -> Unit
 ) {
     if (entries.isEmpty()) return
-    val image = entries[currentIndex % entries.size]
+
+    // 4000枚あっても「今見ている周辺」しか読み込まないPagerを使用
+    val pagerState = rememberPagerState(initialPage = currentIndex) { entries.size }
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    // ViewModel側のインデックス（自動再生による進捗）が変わったら、Pagerをその位置へ移動させる
+    LaunchedEffect(currentIndex) {
+        if (pagerState.currentPage != currentIndex) {
+            pagerState.animateScrollToPage(currentIndex)
+        }
+    }
+
+    // ユーザーが手動でスワイプしてページを変えたら、ViewModel側に「今ここを見ている」と伝える
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.currentPage }.collect { page ->
+            onPageSelected(page)
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            // タップで次の画像へ、長押しでスライドショーを終了して一覧表示に戻る
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onTap = { onTapAdvance() },
-                    onLongPress = { onStop() }
-                )
-            }
     ) {
-        AsyncImage(
-            model = image.uri,
-            contentDescription = image.displayName,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxSize()
-        )
+        // アルバム本体：左右に自由にめくれる
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+            // ページ間隔を少し空けて、境界をわかりやすくする
+            pageSpacing = 16.dp,
+            userScrollEnabled = true 
+        ) { page ->
+            val image = entries[page]
+            AsyncImage(
+                model = image.uri,
+                contentDescription = image.displayName,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
 
-        // ステータスバー(時計・電波・バッテリー)の裏側に白い帯が回り込まないよう、
-        // まずステータスバー分の高さだけ「黒」を敷いてから、その下に操作バー(白背景)を置く。
-        // (前回、白背景→statusBarsPaddingの順にしていたため、白がステータスバーの裏まで
-        //  広がってシステムアイコンが見えなくなっていた。他画面と同じ「黒帯が先」の方式に統一)
+        // 上部の操作バー：秒数設定や停止ボタンを配置
         androidx.compose.foundation.layout.Column(
             modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth()
         ) {
+            // ステータスバー（時計など）と重ならないための黒帯
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -74,25 +117,63 @@ fun SlideshowOverlay(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color.White) // 反転: 白背景+黒文字
-                    .padding(8.dp),
-                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.Center
+                    .background(Color.White.copy(alpha = 0.9f)) // 少し透けさせて圧迫感を減らす
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                SlideshowInterval.values().forEach { opt ->
-                    Text(
-                        text = "${opt.seconds}秒",
-                        color = if (opt == interval) Color.Black else Color.Gray,
+                // 秒数設定（プルダウンメニュー風）
+                Box {
+                    Row(
                         modifier = Modifier
-                            .padding(horizontal = 12.dp)
-                            .clickable { onIntervalSelected(opt) }
+                            .clickable { menuExpanded = true }
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = interval.label,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color.Black
+                        )
+                        Icon(Icons.Filled.ArrowDropDown, contentDescription = null, tint = Color.Black)
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        SlideshowInterval.values().forEach { opt ->
+                            DropdownMenuItem(
+                                text = { Text(opt.label) },
+                                onClick = {
+                                    onIntervalSelected(opt)
+                                    menuExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // 再生・一時停止ボタン
+                IconButton(
+                    onClick = onPauseToggle,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                        contentDescription = if (paused) "再生" else "一時停止",
+                        tint = Color.Black,
+                        modifier = Modifier.size(32.dp)
                     )
                 }
+
+                // 終了ボタン
                 Text(
                     text = "終了",
+                    style = MaterialTheme.typography.labelLarge,
                     color = Color.Red,
                     modifier = Modifier
-                        .padding(horizontal = 12.dp)
                         .clickable { onStop() }
+                        .padding(12.dp)
                 )
             }
         }

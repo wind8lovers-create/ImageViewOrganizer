@@ -48,6 +48,13 @@ import com.hazuki.imageorganizer.viewmodel.SlideshowInterval
 /**
  * パワーアップしたスライドショー画面。
  * アルバムのように左右にめくれる(HorizontalPager)構造になり、一時停止や高速再生に対応。
+ *
+ * 【今回追加した機能】
+ * 一時停止中は、拡大表示画面(FullscreenViewer)と同じ「ZoomableImagePage」部品を使い、
+ * ピンチズーム・拡大中のパン・ダブルタップでの拡大縮小ができるようにしています。
+ * 再生中(自動でページがめくられている間)は今まで通りの、ズーム機能なしの表示のままです。
+ * (自動再生中にズームできてしまうと、拡大している最中に画像が切り替わって
+ * 混乱するため、あえて一時停止中だけに限定しています)
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -66,6 +73,26 @@ fun SlideshowOverlay(
     // 4000枚あっても「今見ている周辺」しか読み込まないPagerを使用
     val pagerState = rememberPagerState(initialPage = currentIndex) { entries.size }
     var menuExpanded by remember { mutableStateOf(false) }
+
+    // 「今表示中のページが、どのくらいの倍率でズームされているか」を覚えておく変数です。
+    // FullscreenViewerのときと同じ考え方で、ここが1倍(等倍)より大きい間は
+    // HorizontalPagerの横スワイプ(ページめくり)を止めて、
+    // 指の動きを「画像内の移動(パン)」専用にします。
+    var currentScale by remember { mutableStateOf(1f) }
+
+    // ページ(表示している写真)が切り替わったタイミングで、ズーム状態を等倍にリセットします。
+    LaunchedEffect(pagerState.currentPage) {
+        currentScale = 1f
+    }
+
+    // 一時停止が解除された(再生が再開された)タイミングでも、念のためズームをリセットします。
+    // (再生中はそもそもAsyncImage表示に切り替わってズーム機能自体を使わなくなりますが、
+    // 保険として値を戻しておきます)
+    LaunchedEffect(paused) {
+        if (!paused) {
+            currentScale = 1f
+        }
+    }
 
     // ViewModel側のインデックス（自動再生による進捗）が変わったら、Pagerをその位置へ移動させる
     LaunchedEffect(currentIndex) {
@@ -92,15 +119,26 @@ fun SlideshowOverlay(
             modifier = Modifier.fillMaxSize(),
             // ページ間隔を少し空けて、境界をわかりやすくする
             pageSpacing = 16.dp,
-            userScrollEnabled = true 
+            // ズームしていない(等倍)ときだけスワイプでのページ送りを許可します。
+            // 再生中は常にcurrentScaleが1fのままなので、今まで通りスワイプ可能です。
+            userScrollEnabled = currentScale <= 1f
         ) { page ->
             val image = entries[page]
-            AsyncImage(
-                model = image.uri,
-                contentDescription = image.displayName,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize()
-            )
+            if (paused) {
+                // 一時停止中：ピンチズーム・パン・ダブルタップ拡大が使える表示
+                ZoomableImagePage(
+                    image = image,
+                    onScaleChanged = { newScale -> currentScale = newScale }
+                )
+            } else {
+                // 再生中：今まで通りのシンプルな表示(ズーム機能なし)
+                AsyncImage(
+                    model = image.uri,
+                    contentDescription = image.displayName,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
 
         // 上部の操作バー：秒数設定や停止ボタンを配置

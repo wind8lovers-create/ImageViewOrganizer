@@ -8,6 +8,9 @@
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
 .DS_Store
+# .NET ビルド生成物
+[Bb]in/
+[Oo]bj/
 /build
 /captures
 .externalNativeBuild
@@ -15,6 +18,22 @@
 local.properties
 # ビルドログや中間ファイル
 *.log
-
+# Python 関連（キャッシュ・PyInstaller生成物）
+__pycache__/
+*.py[cod]
+*$py.class
+*.spec
+dist/
+build/
+.venv/
+venv/
+env/
+# VS Code / Visual Studio 環境設定
+.vscode/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
 # Windowsのフォルダ表示用一時ファイル（Windows環境の場合）
 Thumbs.db

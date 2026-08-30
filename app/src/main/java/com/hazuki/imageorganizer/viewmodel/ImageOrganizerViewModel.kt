@@ -75,6 +75,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             // 保存されたグループがある場合、UI表示用の状態を構築する
             rebuildClassificationDerivedState(savedGroups)
         }
+        // ラベルリスト（AI認識カテゴリー）を読み込む
+        val labels = loadLabels()
+        _uiState.update { it.copy(labels = labels) }
         val last = recentStore.getLastOpened()
         if (last == null) {
             loadDocumentsFolder()
@@ -571,7 +574,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     // ------------------------------------------------------------------
 
     fun startSelection(imageId: Long) {
-        _uiState.update { it.copy(selectionMode = true, selectedIds = setOf(imageId)) }
+        _uiState.update { it.copy(
+            selectionMode = true,
+            selectedIds = setOf(imageId),
+            // ---- 新しい選択状態も更新 ----
+            isSelectionMode = true,
+            selectedCount = 1,
+            currentSelectedLabel = "" // ラベルはユーザーが後で選択
+        ) }
     }
 
     fun toggleSelected(imageId: Long) {
@@ -579,7 +589,13 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             val newSet = state.selectedIds.toMutableSet()
             if (!newSet.add(imageId)) newSet.remove(imageId)
             val stillSelecting = newSet.isNotEmpty()
-            state.copy(selectedIds = newSet, selectionMode = stillSelecting)
+            state.copy(
+                selectedIds = newSet,
+                selectionMode = stillSelecting,
+                // ---- 新しい選択状態も更新 ----
+                isSelectionMode = stillSelecting,
+                selectedCount = newSet.size
+            )
         }
     }
 
@@ -610,7 +626,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
         val range = minOf(anchorIndex, targetIndex)..maxOf(anchorIndex, targetIndex)
         val rangeIds = range.map { entries[it].id }.toSet()
-        _uiState.update { it.copy(selectionMode = true, selectedIds = rangeIds) }
+        _uiState.update { it.copy(
+            selectionMode = true,
+            selectedIds = rangeIds,
+            // ---- 新しい選択状態も更新 ----
+            isSelectionMode = true,
+            selectedCount = rangeIds.size,
+            currentSelectedLabel = "" // ラベルはユーザーが後で選択
+        ) }
     }
 
     fun clearSelection() {
@@ -622,7 +645,11 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 currentJumpIndex = null,
                 addModeActive = false,
                 addModeTargetKey = null,
-                addModeCategory = null
+                addModeCategory = null,
+                // ---- 選択モード・リネーム機能の状態もクリア ----
+                isSelectionMode = false,
+                selectedCount = 0,
+                currentSelectedLabel = ""
             )
         }
         jumpCursorIndex = -1
@@ -1392,5 +1419,110 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     /** 一覧のスクロール追従が完了したら呼ぶ(一度だけ実行させるため) */
     fun consumePendingScroll() {
         _uiState.update { it.copy(pendingScrollRequest = null) }
+    }
+
+    /**
+     * 【ラベルリスト読み込み】
+     * アセットフォルダの「labels.txt」から、AI認識カテゴリーリストを読み込みます。
+     * 形式: "0 01犬\n1 02猫\n..." のように「番号 ラベル名」の形で、各行が改行で分割されます。
+     * ラベル名だけを抽出して返します（例: ["01犬", "02猫", ...]）
+     */
+    private fun loadLabels(): List<String> {
+        return try {
+            val context = getApplication<Application>()
+            val inputStream = context.assets.open("labels.txt")
+            val content = inputStream.bufferedReader().use { it.readText() }
+            content.split("\n")
+                .filter { it.isNotBlank() }
+                .mapNotNull { line ->
+                    // 形式: "0 01犬" → "01犬" を抽出
+                    val parts = line.trim().split(Regex("\\s+"), limit = 2)
+                    if (parts.size >= 2) parts[1] else null
+                }
+        } catch (e: Exception) {
+            // ファイルが見つからない場合は空リスト
+            emptyList()
+        }
+    }
+
+    /**
+     * 【選択モード開始】
+     * 画像が複数選択された時に呼ぶ。選択モードを ON にしてメニューを表示します。
+     */
+    fun startSelectionMode(selectedImageIds: Set<Long>, defaultLabel: String = "") {
+        _uiState.update { 
+            it.copy(
+                isSelectionMode = true,
+                selectedCount = selectedImageIds.size,
+                currentSelectedLabel = defaultLabel
+            )
+        }
+    }
+
+    /**
+     * 【現在選択中のラベルを更新】
+     * プルダウンメニューからラベルが選択された時に呼ぶ。
+     */
+    fun setCurrentSelectedLabel(label: String) {
+        _uiState.update { it.copy(currentSelectedLabel = label) }
+    }
+
+    /**
+     * 【連番→📁[ラベル]フォルダへ移動】
+     * RenameMoveHelper.execute() を呼び出すラッパーメソッド。
+     * 実際の処理は呼び出し側（ViewModel を使う画面）で実装。
+     * ここではラベルリストをそのまま渡すだけ。
+     */
+    fun executeRenameMove(
+        sourceFiles: List<java.io.File>,
+        destFolderRoot: java.io.File,
+        label: String
+    ) {
+        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.execute(
+            sourceFiles = sourceFiles,
+            destFolderRoot = destFolderRoot,
+            label = label,
+            mode = com.hazuki.imageorganizer.data.RenameMoveHelper.ExecuteMode.MOVE
+        )
+        // 処理結果は呼び出し側で処理（ViewModel では単にコアロジックのみ実行）
+        _uiState.update { it.copy(snackbarMessage = "リネーム・移動完了: ${result}") }
+    }
+
+    /**
+     * 【その場で連番リネーム（移動なし）】
+     */
+    fun executeRenameOnly(
+        sourceFiles: List<java.io.File>,
+        label: String
+    ) {
+        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.renameInPlace(
+            sourceFiles = sourceFiles,
+            label = label
+        )
+        _uiState.update { it.copy(snackbarMessage = "リネーム完了: ${result}") }
+    }
+
+    /**
+     * 【ファイル削除】
+     */
+    fun executeDelete(sourceFiles: List<java.io.File>) {
+        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.deleteFiles(sourceFiles)
+        _uiState.update { it.copy(snackbarMessage = "削除完了: ${result}") }
+    }
+
+    /**
+     * 【フォルダ内一括ラベル変更】
+     */
+    fun executeRenameGroupLabel(
+        folder: java.io.File,
+        oldLabel: String,
+        newLabel: String
+    ) {
+        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.renameGroupLabel(
+            folder = folder,
+            oldLabel = oldLabel,
+            newLabel = newLabel
+        )
+        _uiState.update { it.copy(snackbarMessage = "一括変更完了: ${result}") }
     }
 }

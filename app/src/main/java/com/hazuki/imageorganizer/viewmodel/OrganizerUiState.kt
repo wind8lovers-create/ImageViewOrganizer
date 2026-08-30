@@ -104,5 +104,11 @@ data class OrganizerUiState(
     // 画像追加モード(グループ内画面の「画像追加」ボタン→通常一覧に切り替えて同カテゴリのみ選択可能にする)
     val addModeActive: Boolean = false,
     val addModeTargetKey: String? = null, // 追加先グループのキー
-    val addModeCategory: Char? = null // このカテゴリの画像だけ選択可能にする
+    val addModeCategory: Char? = null, // このカテゴリの画像だけ選択可能にする
+
+    // ---- 選択モード・リネーム機能 ----
+    val labels: List<String> = emptyList(), // AI認識カテゴリーリスト（約23個）
+    val selectedCount: Int = 0, // 現在選択中のファイル枚数
+    val currentSelectedLabel: String = "", // 現在選択中のラベル
+    val isSelectionMode: Boolean = false // 選択モード中かどうか
 )

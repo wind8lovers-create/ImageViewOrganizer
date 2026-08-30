@@ -60,7 +60,7 @@ enum class SortOption(val label: String) {
 }
 
 /** サムネイルサイズ(2段階固定) */
-enum class ThumbnailSize(val dp: Int) {
-    SMALL(100),
-    LARGE(150)
+enum class ThumbnailSize(val dp: Int, val label: String) {
+    SMALL(100, "小"),
+    LARGE(150, "大");
 }

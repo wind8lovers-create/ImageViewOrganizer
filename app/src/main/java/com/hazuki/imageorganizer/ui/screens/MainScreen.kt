@@ -33,7 +33,6 @@ import com.hazuki.imageorganizer.data.ThumbnailSize
 import com.hazuki.imageorganizer.ui.components.ClassificationNameDialog
 import com.hazuki.imageorganizer.ui.components.FullscreenViewer
 import com.hazuki.imageorganizer.ui.components.ImageGrid
-import com.hazuki.imageorganizer.ui.components.OrganizerBottomBar
 import com.hazuki.imageorganizer.ui.components.OrganizerTopBar
 import com.hazuki.imageorganizer.ui.components.SlideshowOverlay
 import com.hazuki.imageorganizer.ui.components.SortBottomSheet
@@ -188,35 +187,50 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                             state.selectionMode -> viewModel.openNameDialogForNewGroup()
                             else -> viewModel.toggleScreenMode()
                         }
+                    },
+                    // ---- ソート機能 ----
+                    sortOption = state.sortOption,
+                    onSortClick = { viewModel.toggleSortSheet(true) },
+                    // ---- ラベル関連（新規） ----
+                    displayLabel = state.currentSelectedLabel,
+                    onLabelSelectClick = { /* TODO: ラベル選択ダイアログを開く */ },
+                    // ---- 選択モード・リネーム機能 ----
+                    selectedCount = state.selectedCount,
+                    currentLabel = state.currentSelectedLabel,
+                    labels = state.labels,
+                    isSelectionMode = state.isSelectionMode,
+                    onClearSelection = { viewModel.clearSelection() },
+                    // ---- しおり機能 ----
+                    currentJumpIndex = state.currentJumpIndex,
+                    onJumpToSelected = { viewModel.jumpToNextSelected() },
+                    onJumpToSelectedLongClick = { viewModel.jumpToFirstSelected() },
+                    onRenameMove = {
+                        // 実装予定：選択されたファイルをリネーム＆移動
+                        // TODO: フォルダピッカーから dest を取得して実行
+                    },
+                    onRenameOnly = {
+                        // 実装予定：選択されたファイルをその場でリネーム
+                        // TODO: ファイルリストから実行
+                    },
+                    onCopyRequested = {
+                        // 実装予定：フォルダピッカーを開く（コピー先選択）
+                    },
+                    onMoveRequested = {
+                        // 実装予定：フォルダピッカーを開く（移動先選択）
+                    },
+                    onDeleteConfirmed = {
+                        // 実装予定：選択されたファイルを削除
+                        // TODO: ファイルリストから実行
+                    },
+                    onRenameGroupLabel = {
+                        // 実装予定：フォルダ内の一括ラベル変更
+                        // TODO: ファイルリストから実行
                     }
                 )
                 }
             },
-            bottomBar = {
-                // 分類一覧・グループ内画面では、通常の移動/削除などの下部バーは表示しない
-                // (分類一覧はタップして中に入るだけ、グループ内画面は専用のバーを内包しているため)
-                if (state.screenMode == ScreenMode.GALLERY) {
-                OrganizerBottomBar(
-                    selectionMode = state.selectionMode,
-                    selectedCount = state.selectedIds.size,
-                    sortEnabled = true,
-                    actionsEnabled = !state.isLoading && !state.isStreaming,
-                    currentSortLabel = state.sortOption.label,
-                    onSortClick = { viewModel.toggleSortSheet(true) },
-                    onSelectClick = { /* 選択モードは長押しで開始する仕様のため、案内のみ */ },
-                    onRenameClick = { /* 通常時のリネームは「選択」してから使う操作のため未選択時は無効表示でも良い */ },
-                    onMoveClick = { viewModel.moveSelectedToMovedFolder(gridState.firstVisibleItemIndex) },
-                    onZipClick = { viewModel.zipSelected() },
-                    onDeleteClick = { viewModel.deleteSelected(gridState.firstVisibleItemIndex) },
-                    onRenameSelectedClick = { viewModel.renameSelectedSequentially(gridState.firstVisibleItemIndex) },
-                    onJumpToSelectedClick = { viewModel.jumpToNextSelected() },
-                    onJumpToSelectedLongClick = { viewModel.jumpToFirstSelected() },
-                    currentJumpIndex = state.currentJumpIndex,
-                    onClearSelectionClick = { viewModel.clearSelection() },
-                    addModeActive = state.addModeActive
-                )
-                }
-            }
+            // ---- ボトムバー廃止 ----
+            // (トップバーのメニューに統合されたため)
         ) { padding ->
             Column(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.fillMaxSize()) {

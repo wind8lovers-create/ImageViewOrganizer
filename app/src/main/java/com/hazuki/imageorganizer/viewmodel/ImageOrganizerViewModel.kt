@@ -14,6 +14,7 @@ import com.hazuki.imageorganizer.data.LoadProgress
 import com.hazuki.imageorganizer.data.RecentEntry
 import com.hazuki.imageorganizer.data.RecentEntryType
 import com.hazuki.imageorganizer.data.RecentFoldersStore
+import com.hazuki.imageorganizer.data.RenameMoveHelper
 import com.hazuki.imageorganizer.data.SortOption
 import com.hazuki.imageorganizer.data.ThumbnailSize
 import com.hazuki.imageorganizer.util.ColorGroupPreset
@@ -326,6 +327,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      */
     private fun sortImageList(images: List<ImageItem>, sortOption: SortOption): List<ImageItem> {
         return when (sortOption) {
+            // リネーム済み（_nn_mm形式）のファイルのみを抽出し、名前順（昇順）でソート
+            SortOption.GROUP_SEQ_ASC -> images
+                .filter { RenameMoveHelper.parseRenamedFileInfo(it.displayName) != null }
+                .sortedBy { it.displayName.lowercase() }
             SortOption.NAME_ASC -> images.sortedBy { it.displayName.lowercase() }
             SortOption.NAME_DESC -> images.sortedByDescending { it.displayName.lowercase() }
             SortOption.SIZE_ASC -> images.sortedBy { it.sizeBytes }
@@ -341,8 +346,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * 一覧の中身を決める中心の処理。
-     * ・拡張選択ON: applyExtensionSelectionFilter() に任せる(基準画像との比較で絞り込み)
-     * ・拡張選択OFF: 通常のソート表示のみ
+     * ・拡張選択ON: applyExtensionSelectionFilter() に任せる(基準画像または全体グルーピングで絞り込み)
+     * ・「🏷️ グループ連番（枠色別）↓」: リネーム形式ファイルのみ抽出＋グループごとに枠色を付与
+     * ・その他のソート: 通常の並び替え表示
      */
     private fun applyDisplayList() {
         reconcileSelection()
@@ -356,7 +362,44 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
 
         comparingJob?.cancel()
-        _uiState.update { it.copy(entries = sorted, isComparing = false, matchedCount = 0) }
+
+        // 「🏷️ グループ連番（枠色別）↓」ソートが選ばれている場合
+        if (state.sortOption == SortOption.GROUP_SEQ_ASC) {
+            val groupColors = mutableMapOf<Long, Char>()
+            val groupKeyIndexMap = mutableMapOf<String, Int>()
+
+            for (img in sorted) {
+                val info = RenameMoveHelper.parseRenamedFileInfo(img.displayName) ?: continue
+                // グループ一意キー（例: "01犬_01"）ごとに出現順でインデックス（0, 1, 2...）を割り当てる
+                val groupIdx = groupKeyIndexMap.getOrPut(info.groupKey) { groupKeyIndexMap.size }
+                // 26色パレット（A〜Z）をグループ番号順に循環割り当て
+                val colorCategory = ('A'.code + (groupIdx % 26)).toChar()
+                groupColors[img.id] = colorCategory
+            }
+
+            val msg = if (sorted.isEmpty()) "リネーム形式（_nn_mm）の画像が見つかりませんでした" else null
+
+            _uiState.update {
+                it.copy(
+                    entries = sorted,
+                    isComparing = false,
+                    matchedCount = sorted.size,
+                    extensionGroupColors = groupColors,
+                    snackbarMessage = msg
+                )
+            }
+            return
+        }
+
+        // それ以外の通常ソート時は枠線色をリセット
+        _uiState.update {
+            it.copy(
+                entries = sorted,
+                isComparing = false,
+                matchedCount = 0,
+                extensionGroupColors = emptyMap()
+            )
+        }
     }
 
     fun setSortOption(option: SortOption) {

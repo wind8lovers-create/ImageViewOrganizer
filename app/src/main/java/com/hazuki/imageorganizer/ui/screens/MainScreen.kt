@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,6 +26,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import com.hazuki.imageorganizer.ui.theme.FujiPrimary
 import com.hazuki.imageorganizer.ui.theme.FujiPrimaryDark
@@ -171,11 +173,9 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        WashiBackground(modifier = Modifier.fillMaxSize())
-
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         Scaffold(
-            containerColor = androidx.compose.ui.graphics.Color.Transparent,
+            containerColor = Color.Black,
             snackbarHost = { SnackbarHost(snackbarHostState) },
             topBar = {
                 // グループ内画面(GROUP_DETAIL)は専用のヘッダーを持つため、通常の上部バーは表示しない
@@ -327,8 +327,12 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                                         val id = state.entries.getOrNull(index)?.id
                                         if (id != null) viewModel.handleLongPress(id)
                                     },
-                                    // 拡張選択モード中は、重複グループごとに計算された枠線色(A〜Z)を適用してグループを見分けやすくする
-                                    groupedImageIds = if (state.extensionSelectionActive) state.extensionGroupColors else state.groupedImageIds,
+                                    // 拡張選択モード中、または「🏷️ グループ連番（枠色別）↓」ソート中は、計算された枠線色(A〜Z)を適用してグループを見分けやすくする
+                                    groupedImageIds = if (state.extensionSelectionActive || state.sortOption == com.hazuki.imageorganizer.data.SortOption.GROUP_SEQ_ASC) {
+                                        state.extensionGroupColors
+                                    } else {
+                                        state.groupedImageIds
+                                    },
                                     dimmedIds = dimmedIds,
                                     modifier = Modifier.fillMaxSize().padding(padding)
                                 )

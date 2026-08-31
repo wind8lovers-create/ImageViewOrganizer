@@ -15,21 +15,47 @@ import kotlin.math.roundToInt
  */
 object ClassificationColorUtil {
 
+    /**
+     * 【はづきさん厳選・見分けやすい7色ローテーションパレット】
+     * 隣り合うグループの境界が一目でわかるよう、明暗と色相が交互に配置された7色。
+     *
+     * 1. 🔴 レッド (はっきりした赤)
+     * 2. 🔵 #5d63b0 (上品な藍紫・スレートブルー)
+     * 3. 🟠 オレンジ (明るい橙)
+     * 4. 🟡 #b5b877 (若草色・オリーブイエロー)
+     * 5. 🟣 パープル (深みのある紫)
+     * 6. 🌸 ピンク / マゼンタ (華やかな桃色)
+     * 7. 🟢 #54AA70 (鮮やかなフォレストグリーン・翡翠色)
+     */
+    val SEVEN_COLORS: List<Color> = listOf(
+        Color(0xFFE53935), // 1. 🔴 レッド
+        Color(0xFF5D63B0), // 2. 藍紫 (#5d63b0)
+        Color(0xFFFB8C00), // 3. 🟠 オレンジ
+        Color(0xFFB5B877), // 4. 若草色 (#b5b877)
+        Color(0xFF8E24AA), // 5. 🟣 パープル
+        Color(0xFF606060), // 6. ⬛ ダークグレー (#606060)
+        Color(0xFF54AA70)  // 7. 🟢 翡翠グリーン (#54AA70)
+    )
+
     private val cache: Map<Char, Color> by lazy { buildPalette() }
 
-    /** カテゴリ文字(A〜Z)に対応する枠線色を返す。想定外の文字が来た場合はグレーを返す。 */
+    /** カテゴリ文字(A〜Z)に対応する枠線色を返す。7色をローテーションで循環利用します。 */
     fun colorForCategory(category: Char): Color {
         val upper = category.uppercaseChar()
-        return cache[upper] ?: Color(0xFF9E9E9E)
+        return cache[upper] ?: SEVEN_COLORS[0]
+    }
+
+    /** 0から始まる通し番号から直接7色をローテーションで取得するヘルパー */
+    fun colorForIndex(index: Int): Color {
+        val safeIndex = kotlin.math.abs(index) % SEVEN_COLORS.size
+        return SEVEN_COLORS[safeIndex]
     }
 
     private fun buildPalette(): Map<Char, Color> {
         val letters = ('A'..'Z').toList()
-        val saturation = 0.55f
-        val value = 0.80f
         return letters.mapIndexed { index, ch ->
-            val hue = (360f / letters.size) * index
-            ch to hsvToColor(hue, saturation, value)
+            // 7色を順番にローテーション（0〜6 ➔ 0〜6 ...）
+            ch to SEVEN_COLORS[index % SEVEN_COLORS.size]
         }.toMap()
     }
 

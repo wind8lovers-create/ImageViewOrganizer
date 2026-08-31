@@ -39,6 +39,39 @@ object RenameMoveHelper {
     }
 
     /**
+     * 【リネーム済みファイル情報のデータクラス】
+     * 規則: [ラベル名]_[グループ2文字]_[連番2文字].[拡張子]
+     * 例: "01犬_01_01.jpg" ➔ label="01犬", groupCode="01", seqCode="01"
+     */
+    data class RenamedFileInfo(
+        val label: String,      // ラベル名（例: "01犬"）
+        val groupCode: String,  // グループ2文字（例: "01", "02", "AA"）
+        val seqCode: String     // 画像連番2文字（例: "01", "02"）
+    ) {
+        /** ラベルとグループ番号を組み合わせた一意のキー（枠色分けのグループ単位） */
+        val groupKey: String get() = "${label}_${groupCode}"
+    }
+
+    /**
+     * 【ファイル名がリネーム規則（_nn_mm形式）に合致するか判定】
+     * 正規表現でファイル名を検査し、合致すればラベルやグループコードを返します。
+     * 合致しない場合は null を返します。
+     */
+    fun parseRenamedFileInfo(displayName: String): RenamedFileInfo? {
+        // パターン: [ラベル名]_[グループ2文字]_[画像連番2文字].[拡張子]
+        val pattern = Regex("^(.+)_([0-9A-Z]{2})_([0-9A-Z]{2})\\.[^.]+$")
+        val match = pattern.matchEntire(displayName) ?: return null
+        val label = match.groupValues[1]
+        val groupCode = match.groupValues[2]
+        val seqCode = match.groupValues[3]
+
+        // 2文字コードとして有効な値（01〜99 または AA〜ZZ）かチェック
+        if (fromSeqCode(groupCode) == null || fromSeqCode(seqCode) == null) return null
+
+        return RenamedFileInfo(label, groupCode, seqCode)
+    }
+
+    /**
      * 【数値 ➔ 2文字コード変換（1始まり・01スタート）】
      * 1始まりの通し番号を、2文字の連番文字列に変換します。
      * 例: 1 -> "01", 5 -> "05", 99 -> "99", 100 -> "AA", 775 -> "ZZ"

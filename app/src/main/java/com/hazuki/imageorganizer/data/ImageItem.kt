@@ -41,8 +41,10 @@ data class ImageItem(
         get() = if (width > 0 && height > 0) width.toFloat() / height.toFloat() else null
 }
 
-/** ソート項目(10種類) */
+/** ソート項目 */
 enum class SortOption(val label: String) {
+    // リネーム済みファイル（_nn_mm形式）のみを抽出し、グループごとにカラー枠線で囲んで名前順で表示
+    GROUP_SEQ_ASC("🏷️ グループ連番（枠色別）↑"),
     NAME_ASC("ファイル名 ↑"),
     NAME_DESC("ファイル名 ↓"),
     SIZE_ASC("サイズ ↑"),

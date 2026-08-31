@@ -23,6 +23,7 @@ import com.hazuki.imageorganizer.util.FileOperations
 import com.hazuki.imageorganizer.util.ImageGrouping
 import com.hazuki.imageorganizer.util.PerceptualHash
 import com.hazuki.imageorganizer.util.RenameUtil
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private sealed class PendingMediaAction {
     data class Delete(val targets: List<ImageItem>, val restoreScrollIndex: Int) : PendingMediaAction()
@@ -1511,9 +1513,8 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                         // 最初の部分（番号）を数値に変換
                         val numberPart = parts[0].toIntOrNull()
                         if (numberPart != null) {
-                            // 番号を2文字に正規化（0埋め）
-                            // 例：1 → "01", 23 → "23"
-                            "%02d".format(numberPart) + " " + parts[1]
+                            // 番号を2文字に正規化（0埋め）し、スペースを入れずに結合（例：1 犬 → "01犬"）
+                            "%02d%s".format(numberPart, parts[1])
                         } else {
                             null
                         }
@@ -1542,11 +1543,67 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
-     * 【現在選択中のラベルを更新】
-     * プルダウンメニューからラベルが選択された時に呼ぶ。
+     * 【現在選択中のラベルを更新（長押し時）】
+     * プルダウンメニューからラベルが長押しされた時に呼び、作業ラベルを変更します。
      */
-    fun setCurrentSelectedLabel(label: String) {
-        _uiState.update { it.copy(currentSelectedLabel = label) }
+    fun setCurrentSelectedLabel(label: String, showFeedback: Boolean = true) {
+        _uiState.update {
+            it.copy(
+                currentSelectedLabel = label,
+                snackbarMessage = if (showFeedback) "ラベルを「$label」に設定しました" else it.snackbarMessage
+            )
+        }
+    }
+
+    /**
+     * 【直下のラベルフォルダへ移動（通常タップ時、存在する場合のみ）】
+     * ラベル選択プルダウンで通常タップされたときに呼ばれる。
+     * 現在のフォルダの直下に、指定ラベル（または空白除去後の名前）のフォルダが存在する場合、
+     * そのフォルダへカレントフォルダを切り替えて開きます。存在しない場合は通知します。
+     */
+    fun navigateToSubFolderIfExists(label: String) {
+        val sanitized = RenameMoveHelper.sanitizeForFilename(label)
+        val treeUri = currentFolderUri
+
+        // 通常のフォルダ（SAF）を開いている場合
+        if (treeUri != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val resolver = getApplication<Application>().contentResolver
+                    val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+                    val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+
+                    // 元のラベル名、空白全除去後の名前、またはsanitize後の名前で直下のサブフォルダを検索
+                    val noSpaceLabel = label.replace(" ", "")
+                    val subFolderUri = fileOps.findSubFolderUriSaf(resolver, treeUri, parentDocUri, label)
+                        ?: fileOps.findSubFolderUriSaf(resolver, treeUri, parentDocUri, noSpaceLabel)
+                        ?: fileOps.findSubFolderUriSaf(resolver, treeUri, parentDocUri, sanitized)
+
+                    if (subFolderUri != null) {
+                        // 見つかったサブフォルダのツリーURIを生成し、メインスレッドでフォルダを開く
+                        val subDocId = DocumentsContract.getDocumentId(subFolderUri)
+                        val subTreeUri = DocumentsContract.buildTreeDocumentUri(treeUri.authority, subDocId)
+                        withContext(Dispatchers.Main) {
+                            openFolder(subTreeUri, label)
+                        }
+                    } else {
+                        // 直下に該当フォルダがない場合は、移動せずに案内を表示
+                        _uiState.update {
+                            it.copy(snackbarMessage = "直下に「$label」フォルダはありません (長押しでラベル変更)")
+                        }
+                    }
+                } catch (e: Exception) {
+                    _uiState.update {
+                        it.copy(snackbarMessage = "フォルダ移動に失敗しました: ${e.message}")
+                    }
+                }
+            }
+        } else {
+            // フォルダが開かれていない場合
+            _uiState.update {
+                it.copy(snackbarMessage = "直下に「$label」フォルダはありません (長押しでラベル変更)")
+            }
+        }
     }
 
     /**

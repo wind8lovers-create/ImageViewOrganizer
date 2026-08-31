@@ -133,7 +133,8 @@ fun OrganizerTopBar(
     // ---- ラベル関連（新規） ----
     displayLabel: String = "",
     onLabelSelectClick: () -> Unit = {},
-    onLabelSelected: (String) -> Unit = {},  // ラベル選択ダイアログからの選択結果を受け取るコールバック
+    onLabelSelected: (String) -> Unit = {},  // ラベル選択ダイアログからの長押し選択結果を受け取るコールバック
+    onLabelSubFolderNavigate: (String) -> Unit = {}, // ラベル選択ダイアログからの通常タップ（サブフォルダ移動）を受け取るコールバック
 
     // ---- 選択モード・リネーム機能 ----
     selectedCount: Int = 0,
@@ -332,7 +333,8 @@ fun OrganizerTopBar(
                     LabelSelectDialog(
                         labels = labels,
                         currentLabel = displayLabel,
-                        onLabelSelected = onLabelSelected
+                        onLabelSelected = onLabelSelected,
+                        onLabelClick = onLabelSubFolderNavigate
                     )
                 } else {
                     // ラベルが読み込まれていない場合は、ボタンのみ表示（非活性）

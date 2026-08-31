@@ -238,10 +238,14 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     displayLabel = state.currentSelectedLabel,
                     onLabelSelectClick = { /* 今後の使用に備えて予約済み */ },
                     // 【ラベル選択ダイアログ実装】
-                    // □▷ ボタンをタップでドロップダウンメニュー表示
-                    // ラベルをタップすると、ViewModel に通知して現在選択中ラベルを更新
+                    // タグアイコン（Label）をタップでドロップダウンメニュー表示
+                    // ・長押し: ViewModel に通知して現在選択中ラベルを更新
+                    // ・通常タップ: 現在のフォルダ直下にそのラベルフォルダが存在すれば即座に移動
                     onLabelSelected = { selectedLabel ->
                         viewModel.setCurrentSelectedLabel(selectedLabel)
+                    },
+                    onLabelSubFolderNavigate = { targetLabel ->
+                        viewModel.navigateToSubFolderIfExists(targetLabel)
                     },
                     // ---- 選択モード・リネーム機能 ----
                     selectedCount = state.selectedCount,

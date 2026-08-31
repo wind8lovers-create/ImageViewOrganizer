@@ -1,14 +1,17 @@
 package com.hazuki.imageorganizer.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -22,29 +25,26 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.hazuki.imageorganizer.ui.theme.FujiPrimaryDark
 
 /**
  * =====================================================================
  * 【ラベル選択ダイアログ】
  * 
  * 機能：
- * - TopBar の中央に配置される「□▷」ボタンをタップで表示
- * - ラベル一覧（約23種類）を縦リスト表示
- * - ラベルをタップすると即座に選択＆ダイアログ自動クローズ
- * - キャンセル時は前回選択したラベルは変わらない
- * 
- * 表示方法：
- * - DropdownMenu を使用（既存の SelectionMenuButton と同じスタイル）
- * - 1行1ラベル
- * - スクロール対応（23種類は縦幅で表示可能）
+ * - TopBar の中央に配置されるタグアイコンボタンをタップで表示
+ * - 通常タップ: カレントフォルダ直下にそのラベルのフォルダがあれば移動
+ * - 長押し: 作業ラベル（currentLabel）を変更
  * =====================================================================
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LabelSelectDialog(
     // ---- ラベル関連情報 ----
     labels: List<String>,                    // assets/labels.txt から読み込んだラベル一覧
     currentLabel: String,                    // 現在選択中のラベル（初期値）
-    onLabelSelected: (String) -> Unit,       // ラベル選択時のコールバック
+    onLabelSelected: (String) -> Unit,       // 【長押し時】ラベル変更コールバック
+    onLabelClick: (String) -> Unit = {},     // 【通常タップ時】サブフォルダ移動コールバック
     
     modifier: Modifier = Modifier
 ) {
@@ -80,44 +80,64 @@ fun LabelSelectDialog(
             expanded = showMenu,
             onDismissRequest = { showMenu = false }  // メニュー外をタップで閉じる
         ) {
+            // 操作ヒント表示（上下2行）
+            androidx.compose.foundation.layout.Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    text = "💡 タップ→フォルダへ",
+                    fontSize = 11.sp,
+                    color = FujiPrimaryDark.copy(alpha = 0.75f),
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "　 長押し: ラベル変更",
+                    fontSize = 11.sp,
+                    color = FujiPrimaryDark.copy(alpha = 0.75f),
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
             // =====================================
             // 【ラベルリスト】約23種類を縦リスト表示
             // =====================================
             labels.forEach { label ->
-                DropdownMenuItem(
-                    text = {
-                        // ラベル名をテキスト表示
-                        Text(
-                            text = label,
-                            fontSize = 14.sp,
-                            fontWeight = if (label == currentLabel) FontWeight.Bold else FontWeight.Normal
+                val isSelected = label == currentLabel
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(
+                            onClick = {
+                                // 通常タップ: サブフォルダ移動試行
+                                showMenu = false
+                                onLabelClick(label)
+                            },
+                            onLongClick = {
+                                // 長押し: ラベル名変更
+                                showMenu = false
+                                onLabelSelected(label)
+                            }
                         )
-                    },
-                    onClick = {
-                        // =====================================
-                        // 【ラベル選択時の処理】
-                        // =====================================
-                        
-                        // 1. 選択したラベルをコールバック経由で ViewMode に通知
-                        onLabelSelected(label)
-                        
-                        // 2. ドロップダウンメニューを即座に閉じる
-                        showMenu = false
-                    },
-                    
-                    // 現在選択中のラベルは強調表示（オプション）
-                    leadingIcon = if (label == currentLabel) {
-                        {
-                            Icon(
-                                imageVector = Icons.Default.KeyboardArrowRight,
-                                contentDescription = "選択中",
-                                tint = Color.Blue
-                            )
-                        }
-                    } else {
-                        null
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isSelected) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowRight,
+                            contentDescription = "選択中",
+                            tint = FujiPrimaryDark,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .padding(end = 4.dp)
+                        )
                     }
-                )
+                    Text(
+                        text = label,
+                        fontSize = 14.sp,
+                        color = if (isSelected) FujiPrimaryDark else Color.Unspecified,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
             }
         }
     }

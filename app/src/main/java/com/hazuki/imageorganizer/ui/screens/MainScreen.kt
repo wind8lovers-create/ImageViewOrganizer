@@ -229,9 +229,11 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                             else -> viewModel.toggleScreenMode()
                         }
                     },
-                    // ---- ソート機能 ----
+                    // ---- ソート機能（直下プルダウンメニューから即時選択） ----
                     sortOption = state.sortOption,
-                    onSortClick = { viewModel.toggleSortSheet(true) },
+                    onSortOptionSelected = { selectedSort ->
+                        viewModel.setSortOption(selectedSort)
+                    },
                     // ---- ラベル関連（新規） ----
                     displayLabel = state.currentSelectedLabel,
                     onLabelSelectClick = { /* 今後の使用に備えて予約済み */ },

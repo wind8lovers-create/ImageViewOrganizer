@@ -22,6 +22,8 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material3.AlertDialog
@@ -125,7 +127,8 @@ fun OrganizerTopBar(
 
     // ---- ソート機能 ----
     sortOption: SortOption,
-    onSortClick: () -> Unit,
+    onSortClick: () -> Unit = {},
+    onSortOptionSelected: (SortOption) -> Unit = {},
 
     // ---- ラベル関連（新規） ----
     displayLabel: String = "",
@@ -242,13 +245,37 @@ fun OrganizerTopBar(
                     }
                 }
 
-                // ≡ ソート
-                TooltipIconButton(
-                    icon = Icons.Default.Sort,
-                    tooltip = "ソート: ${sortOption.label}",
-                    onClick = onSortClick,
-                    contentDescription = "ソート"
-                )
+                // ≡ ソート（直下プルダウンメニュー）
+                var showSortMenu by remember { mutableStateOf(false) }
+
+                Box {
+                    TooltipIconButton(
+                        icon = Icons.Default.Sort,
+                        tooltip = "ソート: ${sortOption.label}",
+                        onClick = { showSortMenu = true },
+                        contentDescription = "ソート"
+                    )
+                    DropdownMenu(
+                        expanded = showSortMenu,
+                        onDismissRequest = { showSortMenu = false }
+                    ) {
+                        SortOption.values().forEach { option ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = option.label,
+                                        color = if (option == sortOption) FujiPrimaryDark else FujiPrimaryDark.copy(alpha = 0.85f),
+                                        fontWeight = if (option == sortOption) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                },
+                                onClick = {
+                                    showSortMenu = false
+                                    onSortOptionSelected(option)
+                                }
+                            )
+                        }
+                    }
+                }
 
                 // ★ 拡張選択（新規アイコン化）
                 TooltipIconButton(
@@ -310,8 +337,7 @@ fun OrganizerTopBar(
                 } else {
                     // ラベルが読み込まれていない場合は、ボタンのみ表示（非活性）
                     TooltipIconButton(
-                        icon = null,
-                        iconText = "□▷",
+                        icon = Icons.Default.Label,
                         tooltip = "ラベル選択（未読込）",
                         onClick = {},
                         contentDescription = "ラベル選択",
@@ -330,7 +356,7 @@ fun OrganizerTopBar(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 🔖 しおり（「選択へ」機能）
+                // しおり（「選択へ」機能）
                 // 画像が1枚以上選択されていれば有効になり、タップで選択中の画像へ順次スクロール
                 val hasSelection = selectedCount > 0
                 val jumpTooltip = if (hasSelection) {
@@ -339,8 +365,7 @@ fun OrganizerTopBar(
                     "選択がありません"
                 }
                 TooltipIconButton(
-                    icon = null,
-                    iconText = "🔖",
+                    icon = Icons.Default.Bookmark,
                     tooltip = jumpTooltip,
                     onClick = onJumpToSelected,
                     onLongClick = onJumpToSelectedLongClick,

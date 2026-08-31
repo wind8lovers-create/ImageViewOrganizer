@@ -3,8 +3,10 @@ package com.hazuki.imageorganizer.ui.components
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Label
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -58,18 +60,18 @@ fun LabelSelectDialog(
     // =====================================
     
     Box {
-        // 「□▷」ボタン（トリガー：タップでラベル一覧ドロップダウンを表示）
+        // ラベル選択ボタン（トリガー：タップでラベル一覧ドロップダウンを表示）
         Box(
             modifier = modifier
                 .clickable { showMenu = !showMenu }
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "□▷",
-                color = Color.White,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold
+            Icon(
+                imageVector = Icons.Default.Label,
+                contentDescription = "ラベル選択",
+                tint = Color.White,
+                modifier = Modifier.size(20.dp)
             )
         }
         

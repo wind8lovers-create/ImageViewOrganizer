@@ -324,33 +324,76 @@ class FileOperations(private val context: Context) {
     // フォルダ選択時に取得済みの永続アクセス権限だけで操作できる)。
     // ==================================================================
 
-    /** SAFツリー内に「_Moved_」サブフォルダを探し、無ければ作成してそのUriを返す */
-    private fun getOrCreateMovedFolder(resolver: android.content.ContentResolver, treeUri: Uri, parentDocUri: Uri): Uri {
+    /** 
+     * SAFツリー内に指定した名前のサブフォルダが存在するか探し、あればそのUriを返す（無ければnull）
+     */
+    fun findSubFolderUriSaf(resolver: android.content.ContentResolver, treeUri: Uri, parentDocUri: Uri, folderName: String): Uri? {
         val parentDocId = DocumentsContract.getDocumentId(parentDocUri)
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
-        resolver.query(
-            childrenUri,
-            arrayOf(
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE
-            ),
-            null, null, null
-        )?.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-            val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-            val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
-            while (cursor.moveToNext()) {
-                if (cursor.getString(nameCol) == MOVED_FOLDER_NAME &&
-                    cursor.getString(mimeCol) == DocumentsContract.Document.MIME_TYPE_DIR
-                ) {
-                    return DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(idCol))
+        return try {
+            resolver.query(
+                childrenUri,
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE
+                ),
+                null, null, null
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                while (cursor.moveToNext()) {
+                    if (cursor.getString(nameCol) == folderName &&
+                        cursor.getString(mimeCol) == DocumentsContract.Document.MIME_TYPE_DIR
+                    ) {
+                        return DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(idCol))
+                    }
+                }
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 
+     * SAFツリー内に指定した名前のサブフォルダを探し、無ければ作成してそのUriを返す
+     */
+    fun getOrCreateSubFolder(resolver: android.content.ContentResolver, treeUri: Uri, parentDocUri: Uri, folderName: String): Uri {
+        val existing = findSubFolderUriSaf(resolver, treeUri, parentDocUri, folderName)
+        if (existing != null) return existing
+        return DocumentsContract.createDocument(
+            resolver, parentDocUri, DocumentsContract.Document.MIME_TYPE_DIR, folderName
+        ) ?: throw java.io.IOException("「$folderName」フォルダの作成に失敗しました")
+    }
+
+    /** SAFツリー内に「_Moved_」サブフォルダを探し、無ければ作成してそのUriを返す */
+    private fun getOrCreateMovedFolder(resolver: android.content.ContentResolver, treeUri: Uri, parentDocUri: Uri): Uri {
+        return getOrCreateSubFolder(resolver, treeUri, parentDocUri, MOVED_FOLDER_NAME)
+    }
+
+    /** SAFフォルダ内の直下にあるファイル名一覧を取得する */
+    fun queryFolderChildNamesSaf(treeUri: Uri, folderDocUri: Uri): List<String> {
+        val resolver = context.contentResolver
+        val folderDocId = DocumentsContract.getDocumentId(folderDocUri)
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, folderDocId)
+        val names = mutableListOf<String>()
+        try {
+            resolver.query(
+                childrenUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null, null, null
+            )?.use { cursor ->
+                val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                while (cursor.moveToNext()) {
+                    cursor.getString(nameCol)?.let { names.add(it) }
                 }
             }
+        } catch (e: Exception) {
+            // エラー時は空リストを返す
         }
-        return DocumentsContract.createDocument(
-            resolver, parentDocUri, DocumentsContract.Document.MIME_TYPE_DIR, MOVED_FOLDER_NAME
-        ) ?: throw java.io.IOException("「$MOVED_FOLDER_NAME」フォルダの作成に失敗しました")
+        return names
     }
 
     /** SAFフォルダ内の画像を、同じツリー内の「_Moved_」サブフォルダへ移動する */

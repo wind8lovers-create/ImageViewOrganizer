@@ -304,9 +304,25 @@ class ImageRepository(private val context: Context) {
      *  結果的に画面消灯防止(keepScreenOn)の反映が遅れる/カクつく原因になり得るため)。
      * 1枚ずつ直列処理だと2500枚規模で著しく遅くなるため、chunked+async/awaitAllで並列化している
      * (ensureDateTakenと同じ方式)。既に計算済みの画像(perceptualHashが設定済み)はスキップされる。
+     *
+     * @param onProgress 計算進捗コールバック (done: 完了枚数, total: 対象枚数)
      */
-    suspend fun computeHashes(images: List<ImageItem>): List<ImageItem> = withContext(Dispatchers.IO) {
+    suspend fun computeHashes(
+        images: List<ImageItem>,
+        onProgress: ((done: Int, total: Int) -> Unit)? = null
+    ): List<ImageItem> = withContext(Dispatchers.IO) {
         val targets = images.filter { it.perceptualHash == null }
+        val total = targets.size
+        if (total == 0) {
+            // すでに全件計算済みの場合は完了状態を通知
+            onProgress?.invoke(images.size, images.size)
+            return@withContext images
+        }
+
+        // 開始時の進捗通知 (0 / total)
+        onProgress?.invoke(0, total)
+
+        var completedCount = 0
         targets.chunked(24).forEach { chunk ->
             chunk.map { item ->
                 async {
@@ -325,6 +341,10 @@ class ImageRepository(private val context: Context) {
                     }
                 }
             }.awaitAll()
+
+            // 1チャンク(24枚)完了ごとに進捗を通知
+            completedCount += chunk.size
+            onProgress?.invoke(completedCount.coerceAtMost(total), total)
         }
         images
     }

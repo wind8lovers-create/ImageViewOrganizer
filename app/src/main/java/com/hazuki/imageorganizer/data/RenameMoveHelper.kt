@@ -16,8 +16,8 @@ import java.io.File
  */
 object RenameMoveHelper {
 
-    /** 2文字で表現できる上限数（00〜99 + AA〜ZZ） */
-    const val MAX_SEQUENCE = 776
+    /** 2文字で表現できる上限数（01〜99: 99通り + AA〜ZZ: 676通り = 775通り） */
+    const val MAX_SEQUENCE = 775
 
     /** 実行モード（移動 or コピー） */
     enum class ExecuteMode { MOVE, COPY }
@@ -34,22 +34,22 @@ object RenameMoveHelper {
             val cleanupFailed: Boolean
         ) : Result()
 
-        /** 枚数上限（776枚）を超えた場合 */
+        /** 枚数上限（775枚）を超えた場合 */
         data class TooMany(val requested: Int) : Result()
     }
 
     /**
-     * 【数値 ➔ 2文字コード変換】
-     * 0始まりの通し番号を、2文字の連番文字列に変換します。
-     * 例: 0 -> "00", 99 -> "99", 100 -> "AA", 775 -> "ZZ"
+     * 【数値 ➔ 2文字コード変換（1始まり・01スタート）】
+     * 1始まりの通し番号を、2文字の連番文字列に変換します。
+     * 例: 1 -> "01", 5 -> "05", 99 -> "99", 100 -> "AA", 775 -> "ZZ"
      */
     fun toSeqCode(n: Int): String {
-        require(n in 0 until MAX_SEQUENCE) { "連番の上限(776)を超えています: $n" }
-        return if (n < 100) {
-            // 0〜99は数字2桁（0埋め）
+        require(n in 1..MAX_SEQUENCE) { "連番の上限(1〜$MAX_SEQUENCE)を超えています: $n" }
+        return if (n <= 99) {
+            // 1〜99は数字2桁（01〜99）
             "%02d".format(n)
         } else {
-            // 100〜775はアルファベット2文字
+            // 100〜775はアルファベット2文字（AA〜ZZ）
             val letterIndex = n - 100 // 0 〜 675
             val first = 'A' + (letterIndex / 26)
             val second = 'A' + (letterIndex % 26)
@@ -58,15 +58,15 @@ object RenameMoveHelper {
     }
 
     /**
-     * 【2文字コード ➔ 数値変換】
-     * "00"〜"ZZ" の2文字コードを、元の0始まりの数値に戻します。
+     * 【2文字コード ➔ 数値変換（1始まり）】
+     * "01"〜"ZZ" の2文字コードを、元の1始まりの数値に戻します。
      * 不正な文字列の場合は null を返します。
      */
     fun fromSeqCode(code: String): Int? {
         if (code.length != 2) return null
         return if (code[0].isDigit() && code[1].isDigit()) {
-            // "00"〜"99"
-            code.toIntOrNull()?.takeIf { it in 0..99 }
+            // "01"〜"99"（※"00"は無効または1未満）
+            code.toIntOrNull()?.takeIf { it in 1..99 }
         } else if (code[0] in 'A'..'Z' && code[1] in 'A'..'Z') {
             // "AA"〜"ZZ"
             100 + (code[0] - 'A') * 26 + (code[1] - 'A')
@@ -90,33 +90,43 @@ object RenameMoveHelper {
     }
 
     /**
-     * 【既存ファイルを読み取って、次のグループ番号を探す】
-     * フォルダ内の既存ファイル（同じラベル名で始まるもの）をスキャンし、
-     * 次に使うべきグループ番号（0始まり）を自動計算して返します。
+     * 【既存ファイル名一覧を読み取って、次のグループ番号を探す】
+     * ファイル名一覧（同じラベル名で始まるもの）をスキャンし、
+     * 次に使うべきグループ番号（1始まり: 1➔"01", 2➔"02"...）を自動計算して返します。
+     * SAFやMediaStoreなど、Fileオブジェクトが直接使えない場合にも利用できます。
      */
-    fun findNextGroupIndex(destFolder: File, sanitizedLabel: String): Int {
-        if (!destFolder.exists() || !destFolder.isDirectory) return 0
-
+    fun findNextGroupIndexFromNames(existingNames: Collection<String>, sanitizedLabel: String): Int {
         // パターン: [ラベル名]_[グループ2文字]_[画像番号2文字].[拡張子]
         val pattern = Regex("^${Regex.escape(sanitizedLabel)}_([0-9A-Z]{2})_([0-9A-Z]{2})\\..+$")
-        var maxIndex = -1
+        var maxIndex = 0 // 既存が無ければ 0 ➔ 次は 1（"01"）
 
-        destFolder.listFiles()?.forEach { file ->
-            val match = pattern.matchEntire(file.name) ?: return@forEach
+        for (name in existingNames) {
+            val match = pattern.matchEntire(name) ?: continue
             val groupCode = match.groupValues[1] // グループ2文字
-            val groupIndex = fromSeqCode(groupCode) ?: return@forEach
+            val groupIndex = fromSeqCode(groupCode) ?: continue
             if (groupIndex > maxIndex) {
                 maxIndex = groupIndex
             }
         }
-        // 見つかった最大番号の「次 (+1)」を返します（無ければ 0）
+        // 見つかった最大番号の「次 (+1)」を返します（既存が無ければ 1 = "01"）
         return maxIndex + 1
+    }
+
+    /**
+     * 【既存ファイルを読み取って、次のグループ番号を探す】
+     * フォルダ内の既存ファイル（同じラベル名で始まるもの）をスキャンし、
+     * 次に使うべきグループ番号（1始まり）を自動計算して返します。
+     */
+    fun findNextGroupIndex(destFolder: File, sanitizedLabel: String): Int {
+        if (!destFolder.exists() || !destFolder.isDirectory) return 1
+        val names = destFolder.listFiles()?.map { it.name } ?: emptyList()
+        return findNextGroupIndexFromNames(names, sanitizedLabel)
     }
 
     /**
      * 【① 連番リネーム ＋ ラベル名フォルダを作成して移動/コピー】
      *
-     * @param sourceFiles    選択された元ファイル一覧（並び順どおりに 00, 01... と番号が付きます）
+     * @param sourceFiles    選択された元ファイル一覧（並び順どおりに 01, 02... と番号が付きます）
      * @param destFolderRoot 保存先の親フォルダ（この中に「ラベル名」のフォルダが作られます）
      * @param label          ラベル名（例: "猫"）
      * @param mode           MOVE（移動）または COPY（コピー）
@@ -137,17 +147,17 @@ object RenameMoveHelper {
             labelFolder.mkdirs()
         }
 
-        // 2. ラベルフォルダ内の既存ファイルから次のグループ番号を取得
+        // 2. ラベルフォルダ内の既存ファイルから次のグループ番号を取得（1始まり）
         val groupIndex = findNextGroupIndex(labelFolder, sanitizedLabel)
-        if (groupIndex >= MAX_SEQUENCE) {
+        if (groupIndex > MAX_SEQUENCE) {
             return Result.TooMany(sourceFiles.size)
         }
         val groupCode = toSeqCode(groupIndex)
 
-        // 3. 安全のため、まずは全件「コピー」を行う
+        // 3. 安全のため、まずは全件「コピー」を行う（連番は 01 スタート）
         val copiedFiles = mutableListOf<File>()
         for ((i, srcFile) in sourceFiles.withIndex()) {
-            val imageCode = toSeqCode(i)
+            val imageCode = toSeqCode(i + 1) // 1枚目=01, 5枚目=05
             val ext = srcFile.extension
             val destFileName = if (ext.isNotBlank()) {
                 "${sanitizedLabel}_${groupCode}_${imageCode}.$ext"
@@ -203,7 +213,7 @@ object RenameMoveHelper {
 
         val renamedPairs = mutableListOf<Pair<File, File>>()
         for ((i, srcFile) in sourceFiles.withIndex()) {
-            val imageCode = toSeqCode(i)
+            val imageCode = toSeqCode(i + 1) // 1枚目=01, 5枚目=05
             val ext = srcFile.extension
             val newName = if (ext.isNotBlank()) {
                 "${sanitizedLabel}_${groupCode}_${imageCode}.$ext"

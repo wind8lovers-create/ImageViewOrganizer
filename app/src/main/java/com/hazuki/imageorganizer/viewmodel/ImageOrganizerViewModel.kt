@@ -19,6 +19,7 @@ import com.hazuki.imageorganizer.data.ThumbnailSize
 import com.hazuki.imageorganizer.util.ColorGroupPreset
 import com.hazuki.imageorganizer.util.ColorPalette
 import com.hazuki.imageorganizer.util.FileOperations
+import com.hazuki.imageorganizer.util.ImageGrouping
 import com.hazuki.imageorganizer.util.PerceptualHash
 import com.hazuki.imageorganizer.util.RenameUtil
 import kotlinx.coroutines.Job
@@ -77,7 +78,8 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
         // ラベルリスト（AI認識カテゴリー）を読み込む
         val labels = loadLabels()
-        _uiState.update { it.copy(labels = labels) }
+        val initialLabel = labels.firstOrNull() ?: "01 未分類"
+        _uiState.update { it.copy(labels = labels, currentSelectedLabel = initialLabel) }
         val last = recentStore.getLastOpened()
         if (last == null) {
             loadDocumentsFolder()
@@ -243,7 +245,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      * 現在開いているフォルダを、そのソースのまま再読込する(移動/削除/リネーム後の更新用)。
      * @param scrollTarget 再読込完了後に一覧を戻すスクロール位置(実行前の表示位置)。
      */
-    private fun reloadCurrentFolder(scrollTarget: Int) {
+    private fun reloadCurrentFolder(scrollTarget: Int = 0) {
         val zipDir = currentZipDir
         val uri = currentFolderUri
         when {
@@ -391,32 +393,35 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      *   2枚以上なら(ソート表示上での)最初の画像を基準にする。未選択なら起動しない。
      * ・ON→OFF: フィルタを解除し、通常の一覧表示に戻す。基準画像(origin)が見える位置までスクロールする。
      */
+    /**
+     * 上部バーの「拡張選択」ボタン。
+     * ・OFF→ON: フォルダ内全体の重複・類似画像を検索する。
+     *   画像を選択している場合はその画像を基準画像(origin)として優先表示し、
+     *   未選択の場合でもフォルダ全体の重複画像を総当たりで抽出する。
+     * ・ON→OFF: フィルタを解除し、通常の一覧表示に戻す。
+     */
     fun toggleExtensionSelection() {
         val state = _uiState.value
         if (state.extensionSelectionActive) {
             disableExtensionSelection()
             return
         }
-        if (state.selectedIds.isEmpty()) {
-            _uiState.update { it.copy(snackbarMessage = "まず、似た画像を探したい画像を選択してください") }
-            return
-        }
-        val currentOrder = state.entries
-        val origin = currentOrder.firstOrNull { it.id in state.selectedIds } ?: selectedImages().firstOrNull()
-        if (origin == null) {
-            _uiState.update { it.copy(snackbarMessage = "基準にする画像が見つかりませんでした") }
-            return
-        }
+        // 選択画像がある場合は基準画像(origin)として保持し、未選択ならフォルダ全件を対象にする
+        val origin = state.entries.firstOrNull { it.id in state.selectedIds } ?: selectedImages().firstOrNull()
+
         _uiState.update {
             it.copy(
                 extensionSelectionActive = true,
-                originImageId = origin.id,
-                hashMatchEnabled = false,
+                originImageId = origin?.id,
+                hashMatchEnabled = true, // 最初からハッシュ比較をONにして重複を探す
+                hashMatchThreshold = 10, // デフォルト閾値10
                 saturationTolerance = 0f,
                 brightnessTolerance = 0f,
                 colorPresetStep = 0,
                 aspectRatioOnly = false,
-                styleMatchThreshold = 0f
+                styleMatchThreshold = 0f,
+                extensionGroupColors = emptyMap(),
+                hashProgressText = null
             )
         }
         applyDisplayList()
@@ -434,80 +439,95 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 brightnessTolerance = 0f,
                 colorPresetStep = 0,
                 aspectRatioOnly = false,
-                styleMatchThreshold = 0f
+                styleMatchThreshold = 0f,
+                extensionGroupColors = emptyMap(),
+                hashProgressText = null
             )
         }
         applyDisplayList()
-        val restoredIndex = _uiState.value.entries.indexOfFirst { it.id == originId }
-        if (restoredIndex >= 0) requestScroll(restoredIndex)
+        if (originId != null) {
+            val restoredIndex = _uiState.value.entries.indexOfFirst { it.id == originId }
+            if (restoredIndex >= 0) requestScroll(restoredIndex)
+        }
     }
 
     /**
      * 拡張選択のフィルタを一覧に反映する。
-     * 基準画像(origin)との類似度は、保存済みの知覚ハッシュ・彩度明度・代表色パレット同士の
-     * 比較のみで判定するため、スライダー操作のたびに呼ばれても画像本体の再デコードは発生しない
-     * (未計算の画像がある場合のみ、ここでバックグラウンド計算される)。
-     * 基準画像(origin)は常に先頭に固定表示する。
+     *
+     * 【処理の流れ】
+     * 1. フォルダ全体の画像について知覚ハッシュ・彩度明度・代表色パレットをバックグラウンド計算。
+     *    計算の進捗状況（〇/〇枚 〇％）をリアルタイムにUIへ通知する。
+     * 2. ImageGrouping.group を使用し、フォルダ内の全画像ペアを総当たり比較して
+     *    条件を満たす重複・類似画像グループ（2枚以上）をすべて抽出する。
+     * 3. 似ている画像同士が隣り合うようにリストに並べ替え、単独画像は除外する。
+     * 4. グループごとに見分けやすい枠線の色（'A'〜'Z'）を割り当ててグリッドに表示する。
      */
     private fun applyExtensionSelectionFilter(sorted: List<ImageItem>, state: OrganizerUiState) {
         comparingJob?.cancel()
-        val origin = allImages.firstOrNull { it.id == state.originImageId }
-        if (origin == null) {
-            // 基準画像が移動・削除等で無くなっていた場合は、フィルタを解除して通常表示に戻す
-            _uiState.update {
-                it.copy(
-                    extensionSelectionActive = false,
-                    originImageId = null,
-                    entries = sorted,
-                    isComparing = false,
-                    matchedCount = 0,
-                    snackbarMessage = "基準画像が見つからないため、拡張選択を解除しました"
-                )
-            }
-            return
-        }
         comparingJob = viewModelScope.launch {
             _uiState.update { it.copy(isComparing = true) }
-            // ハッシュ・彩度明度・代表色パレットが未計算の画像だけ、ここでバックグラウンド計算する
-            val analyzed = repository.computeHashes(sorted)
-            val current = _uiState.value
-            val filtered = analyzed.filter { candidate ->
-                if (candidate.id == origin.id) return@filter true // 基準画像自身は常に表示する
 
-                val hashOk = !current.hashMatchEnabled || run {
-                    val oh = origin.perceptualHash
-                    val ch = candidate.perceptualHash
-                    oh != null && ch != null && PerceptualHash.hammingDistance(oh, ch) <= HASH_MATCH_THRESHOLD
+            // ハッシュ・彩度明度・代表色パレットが未計算の画像だけ、ここでバックグラウンド計算する
+            val analyzed = repository.computeHashes(sorted) { done, total ->
+                if (total > 0) {
+                    val percent = (done * 100) / total
+                    _uiState.update {
+                        it.copy(hashProgressText = "ハッシュ計算中... $done/${total}枚 ($percent%)")
+                    }
                 }
-                val saturationOk = current.saturationTolerance <= 0f || run {
-                    val os = origin.avgSaturation
-                    val cs = candidate.avgSaturation
-                    os != null && cs != null && kotlin.math.abs(os - cs) <= current.saturationTolerance
-                }
-                val brightnessOk = current.brightnessTolerance <= 0f || run {
-                    val ob = origin.avgBrightness
-                    val cb = candidate.avgBrightness
-                    ob != null && cb != null && kotlin.math.abs(ob - cb) <= current.brightnessTolerance
-                }
-                val aspectOk = !current.aspectRatioOnly || run {
-                    val oa = origin.aspectRatio
-                    val ca = candidate.aspectRatio
-                    oa != null && ca != null && ColorPalette.aspectRatioMatches(oa, ca)
-                }
-                val styleOk = current.styleMatchThreshold <= 0f || run {
-                    val op = origin.colorPalette
-                    val cp = candidate.colorPalette
-                    op != null && cp != null && ColorPalette.similarity(op, cp) * 100f >= current.styleMatchThreshold
-                }
-                hashOk && saturationOk && brightnessOk && aspectOk && styleOk
             }
-            // 基準画像(origin)を常に先頭に固定表示する
-            val originFirst = filtered.sortedByDescending { it.id == origin.id }
+
+            val current = _uiState.value
+            // ハッシュ値の閾値（スイッチON時は指定閾値1〜40、OFF時はnullでハッシュ判定スキップ）
+            val hashThreshold = if (current.hashMatchEnabled) current.hashMatchThreshold else null
+            val satTolerance = if (current.saturationTolerance > 0f) current.saturationTolerance else null
+            val briTolerance = if (current.brightnessTolerance > 0f) current.brightnessTolerance else null
+            val styleThreshold = current.styleMatchThreshold
+
+            // すべての条件が未指定の場合は、デフォルトでハッシュ値閾値10を適用
+            val effectiveHashThreshold = if (hashThreshold == null && satTolerance == null && briTolerance == null && styleThreshold <= 0f) {
+                current.hashMatchThreshold
+            } else {
+                hashThreshold
+            }
+
+            // フォルダ内の全画像を総当たり比較して、2枚以上の類似グループを抽出
+            val groups = ImageGrouping.group(
+                images = analyzed,
+                threshold = effectiveHashThreshold,
+                saturationTolerance = satTolerance,
+                brightnessTolerance = briTolerance,
+                styleMatchThreshold = styleThreshold
+            )
+
+            // グループごとに枠線色（'A'..'Z'）を割り当て、似ている画像同士が隣り合うように並べる
+            val groupColors = mutableMapOf<Long, Char>()
+            val orderedEntries = mutableListOf<ImageItem>()
+
+            // 基準画像(origin)がある場合は、その画像が含まれるグループを先頭に配置
+            val originId = current.originImageId
+            val sortedGroupList = if (originId != null) {
+                groups.values.sortedByDescending { groupList -> groupList.any { it.id == originId } }
+            } else {
+                groups.values.toList()
+            }
+
+            sortedGroupList.forEachIndexed { groupIdx, groupImages ->
+                // アルファベット26色（A〜Z）をグループ番号順に循環割り当て
+                val colorCategory = ('A'.code + (groupIdx % 26)).toChar()
+                for (img in groupImages) {
+                    groupColors[img.id] = colorCategory
+                    orderedEntries.add(img)
+                }
+            }
+
             _uiState.update {
                 it.copy(
-                    entries = originFirst,
+                    entries = orderedEntries,
                     isComparing = false,
-                    matchedCount = originFirst.size
+                    matchedCount = orderedEntries.size,
+                    extensionGroupColors = groupColors,
+                    hashProgressText = null
                 )
             }
         }
@@ -516,6 +536,13 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun toggleHashMatch(enabled: Boolean) {
         _uiState.update { it.copy(hashMatchEnabled = enabled) }
         applyDisplayList()
+    }
+
+    /** ハッシュ値の許容閾値スライダー(1〜20)。操作中に毎フレーム再計算が走らないようデバウンスする。 */
+    fun setHashMatchThreshold(value: Int) {
+        val clamped = value.coerceIn(1, 20)
+        _uiState.update { it.copy(hashMatchThreshold = clamped) }
+        debounceApply()
     }
 
     fun toggleAspectRatioOnly(enabled: Boolean) {
@@ -577,10 +604,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         _uiState.update { it.copy(
             selectionMode = true,
             selectedIds = setOf(imageId),
-            // ---- 新しい選択状態も更新 ----
+            // ---- 新しい選択状態も更新（ラベルは現在の選択を維持する） ----
             isSelectionMode = true,
-            selectedCount = 1,
-            currentSelectedLabel = "" // ラベルはユーザーが後で選択
+            selectedCount = 1
         ) }
     }
 
@@ -629,10 +655,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         _uiState.update { it.copy(
             selectionMode = true,
             selectedIds = rangeIds,
-            // ---- 新しい選択状態も更新 ----
+            // ---- 新しい選択状態も更新（ラベルは現在の選択を維持する） ----
             isSelectionMode = true,
-            selectedCount = rangeIds.size,
-            currentSelectedLabel = "" // ラベルはユーザーが後で選択
+            selectedCount = rangeIds.size
         ) }
     }
 
@@ -646,10 +671,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 addModeActive = false,
                 addModeTargetKey = null,
                 addModeCategory = null,
-                // ---- 選択モード・リネーム機能の状態もクリア ----
+                // ---- 選択モード・リネーム機能の状態もクリア（ラベルは次回のために保持） ----
                 isSelectionMode = false,
-                selectedCount = 0,
-                currentSelectedLabel = ""
+                selectedCount = 0
             )
         }
         jumpCursorIndex = -1
@@ -1435,9 +1459,24 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             content.split("\n")
                 .filter { it.isNotBlank() }
                 .mapNotNull { line ->
-                    // 形式: "0 01犬" → "01犬" を抽出
+                    // =====================================
+                    // 形式変換：「1 犬」→「01 犬」に正規化
+                    // ラベル番号を2文字0埋めで統一
+                    // =====================================
                     val parts = line.trim().split(Regex("\\s+"), limit = 2)
-                    if (parts.size >= 2) parts[1] else null
+                    if (parts.size >= 2) {
+                        // 最初の部分（番号）を数値に変換
+                        val numberPart = parts[0].toIntOrNull()
+                        if (numberPart != null) {
+                            // 番号を2文字に正規化（0埋め）
+                            // 例：1 → "01", 23 → "23"
+                            "%02d".format(numberPart) + " " + parts[1]
+                        } else {
+                            null
+                        }
+                    } else {
+                        null
+                    }
                 }
         } catch (e: Exception) {
             // ファイルが見つからない場合は空リスト
@@ -1469,60 +1508,478 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * 【連番→📁[ラベル]フォルダへ移動】
-     * RenameMoveHelper.execute() を呼び出すラッパーメソッド。
-     * 実際の処理は呼び出し側（ViewModel を使う画面）で実装。
-     * ここではラベルリストをそのまま渡すだけ。
+     * 選択された画像を、指定されたラベル名のサブフォルダへ連番リネームして移動します。
+     * 
+     * ■ 命名規則（RenameMoveHelper準拠）:
+     *   [ラベル名]_[グループ番号2文字]_[画像番号2文字].[拡張子]
+     *   例: 01犬_00_00.jpg, 01犬_00_01.jpg
+     * 
+     * ■ 処理の流れ:
+     * 1. 選択中の画像を取得（空なら通知して終了）
+     * 2. ラベルの空白を除去して安全なフォルダ名・ファイル名にする（例:「01 犬」➔「01犬」）
+     * 3. 対象フォルダ内に既に存在するファイルを調べ、次の空きグループ番号（00〜ZZ）を自動決定
+     * 4. 選択順に画像番号（00〜ZZ）を付与してリネーム＆移動
+     * 5. 完了後に画面の一覧を自動再読み込みして最新状態に更新
      */
-    fun executeRenameMove(
-        sourceFiles: List<java.io.File>,
-        destFolderRoot: java.io.File,
-        label: String
-    ) {
-        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.execute(
-            sourceFiles = sourceFiles,
-            destFolderRoot = destFolderRoot,
-            label = label,
-            mode = com.hazuki.imageorganizer.data.RenameMoveHelper.ExecuteMode.MOVE
-        )
-        // 処理結果は呼び出し側で処理（ViewModel では単にコアロジックのみ実行）
-        _uiState.update { it.copy(snackbarMessage = "リネーム・移動完了: ${result}") }
+    fun executeRenameMove(label: String) {
+        val targets = selectedImages()
+        if (targets.isEmpty()) {
+            _uiState.update { it.copy(snackbarMessage = "移動対象の画像が選択されていません") }
+            return
+        }
+        if (targets.size > com.hazuki.imageorganizer.data.RenameMoveHelper.MAX_SEQUENCE) {
+            _uiState.update { it.copy(snackbarMessage = "一度に処理できる上限（${com.hazuki.imageorganizer.data.RenameMoveHelper.MAX_SEQUENCE}枚）を超えています") }
+            return
+        }
+
+        // ラベル名の正規化（スペース削除 ＋ 禁則文字を「_」に置換）
+        val rawLabel = label.ifBlank { "未分類" }
+        val sanitizedLabel = com.hazuki.imageorganizer.data.RenameMoveHelper.sanitizeForFilename(rawLabel.replace(" ", ""))
+
+        val zipDir = currentZipDir
+        val treeUri = currentFolderUri
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                var successCount = 0
+                when {
+                    // ---- ① SAFフォルダ（ユーザーがフォルダ選択で開いたフォルダ）の場合 ----
+                    treeUri != null -> {
+                        val resolver = getApplication<android.app.Application>().contentResolver
+                        val treeDocId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                        val parentDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+
+                        // 1. ラベル名のサブフォルダを取得または新規作成
+                        val targetFolderUri = fileOps.getOrCreateSubFolder(resolver, treeUri, parentDocUri, sanitizedLabel)
+
+                        // 2. 【統合スキャン】現在のフォルダ ＋ 直下のラベルフォルダの両方をスキャンして次のグループ番号を決定
+                        val currentFolderNames = allImages.map { it.displayName }
+                        val subFolderNames = fileOps.queryFolderChildNamesSaf(treeUri, targetFolderUri)
+                        val combinedNames = currentFolderNames + subFolderNames
+                        val groupIndex = com.hazuki.imageorganizer.data.RenameMoveHelper.findNextGroupIndexFromNames(combinedNames, sanitizedLabel)
+                        val groupCode = com.hazuki.imageorganizer.data.RenameMoveHelper.toSeqCode(groupIndex)
+
+                        // 3. 安全第一のコピー処理（全件成功するまで元ファイルは消さない）
+                        val copiedNewUris = mutableListOf<android.net.Uri>()
+                        var failedIndex = -1
+
+                        for ((index, item) in targets.withIndex()) {
+                            val imageCode = com.hazuki.imageorganizer.data.RenameMoveHelper.toSeqCode(index + 1) // 1枚目=01, 5枚目=05
+                            val ext = item.extension
+                            val destFileName = if (ext.isNotBlank()) {
+                                "${sanitizedLabel}_${groupCode}_${imageCode}.$ext"
+                            } else {
+                                "${sanitizedLabel}_${groupCode}_${imageCode}"
+                            }
+
+                            // ① 移動先フォルダ内に、リネーム後の新ファイルを作成
+                            val newDocUri = try {
+                                android.provider.DocumentsContract.createDocument(
+                                    resolver, targetFolderUri, item.mimeType, destFileName
+                                )
+                            } catch (e: Exception) {
+                                null
+                            }
+
+                            if (newDocUri == null) {
+                                failedIndex = index + 1
+                                break
+                            }
+
+                            // ② データを新しいファイルへストリームコピー
+                            val copyOk = try {
+                                resolver.openInputStream(item.uri)?.use { input ->
+                                    resolver.openOutputStream(newDocUri)?.use { output ->
+                                        input.copyTo(output)
+                                        true
+                                    }
+                                } ?: false
+                            } catch (e: Exception) {
+                                false
+                            }
+
+                            if (!copyOk) {
+                                // コピー失敗時は不完全な新ファイルを削除
+                                try { android.provider.DocumentsContract.deleteDocument(resolver, newDocUri) } catch (e: Exception) {}
+                                failedIndex = index + 1
+                                break
+                            }
+
+                            copiedNewUris.add(newDocUri)
+                        }
+
+                        // 4. 【ロールバック処理】途中で1枚でも失敗した場合は作成した新ファイルを全て削除
+                        if (failedIndex != -1) {
+                            for (uri in copiedNewUris) {
+                                try { android.provider.DocumentsContract.deleteDocument(resolver, uri) } catch (e: Exception) {}
+                            }
+                            _uiState.update { 
+                                it.copy(snackbarMessage = "エラー: ${targets.size}枚中 ${failedIndex}枚目の移動に失敗したため処理を中断し、元の状態に戻しました") 
+                            }
+                            return@launch
+                        }
+
+                        // 5. 【全件成功時のみ元ファイルを削除】
+                        for (item in targets) {
+                            try {
+                                android.provider.DocumentsContract.deleteDocument(resolver, item.uri)
+                                successCount++
+                            } catch (e: Exception) {
+                                // 個別の削除失敗があっても継続
+                            }
+                        }
+                    }
+
+                    // ---- ② ローカルフォルダ（ZIP展開時など）の場合 ----
+                    zipDir != null -> {
+                        val sourceFiles = targets.mapNotNull { item ->
+                            item.uri.path?.let { java.io.File(it) }
+                        }
+                        val parentFolder = sourceFiles.firstOrNull()?.parentFile ?: zipDir
+                        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.execute(
+                            sourceFiles = sourceFiles,
+                            destFolderRoot = parentFolder,
+                            label = sanitizedLabel,
+                            mode = com.hazuki.imageorganizer.data.RenameMoveHelper.ExecuteMode.MOVE
+                        )
+                        when (result) {
+                            is com.hazuki.imageorganizer.data.RenameMoveHelper.Result.Success -> {
+                                successCount = result.count
+                            }
+                            is com.hazuki.imageorganizer.data.RenameMoveHelper.Result.Failure -> {
+                                _uiState.update { 
+                                    it.copy(snackbarMessage = "エラー: ${result.total}枚中 ${result.succeededCount + 1}枚目で失敗したため処理を中断し、元の状態に戻しました") 
+                                }
+                                return@launch
+                            }
+                            is com.hazuki.imageorganizer.data.RenameMoveHelper.Result.TooMany -> {
+                                _uiState.update { it.copy(snackbarMessage = "上限超過: 一度に処理できる上限を超えています") }
+                                return@launch
+                            }
+                        }
+                    }
+
+                    // ---- ③ 既定フォルダ（Download/未整理 など MediaStore経由）の場合 ----
+                    else -> {
+                        _uiState.update { it.copy(snackbarMessage = "この操作を行うには、上部の📁アイコンから対象フォルダを選択して開いてください") }
+                        return@launch
+                    }
+                }
+
+                // 選択解除＆グループ所属の解除
+                removeImagesFromAllGroups(targets.map { it.id })
+                clearSelection()
+
+                // 結果通知＆フォルダの再読み込みで画面を最新化
+                _uiState.update { it.copy(snackbarMessage = "${successCount}枚を「$sanitizedLabel」フォルダに連番移動しました") }
+                reloadCurrentFolder(0)
+
+            } catch (e: Exception) {
+                _uiState.update { it.copy(snackbarMessage = "エラーが発生しました: ${e.localizedMessage}") }
+            }
+        }
     }
 
     /**
-     * 【その場で連番リネーム（移動なし）】
+     * 【その場で連番リネーム（フォルダ移動なし）】
+     * 選択された画像を、現在のフォルダ内で「ラベル_グループ_連番」の形式に名前を変更します。
+     * 途中で失敗した場合は自動的に元の名前にロールバック（復元）します。
      */
-    fun executeRenameOnly(
-        sourceFiles: List<java.io.File>,
-        label: String
-    ) {
-        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.renameInPlace(
-            sourceFiles = sourceFiles,
-            label = label
-        )
-        _uiState.update { it.copy(snackbarMessage = "リネーム完了: ${result}") }
+    fun executeRenameOnly(label: String) {
+        val targets = selectedImages()
+        if (targets.isEmpty()) {
+            _uiState.update { it.copy(snackbarMessage = "リネーム対象の画像が選択されていません") }
+            return
+        }
+        if (targets.size > com.hazuki.imageorganizer.data.RenameMoveHelper.MAX_SEQUENCE) {
+            _uiState.update { it.copy(snackbarMessage = "一度に処理できる上限（${com.hazuki.imageorganizer.data.RenameMoveHelper.MAX_SEQUENCE}枚）を超えています") }
+            return
+        }
+
+        // ラベル名の正規化（スペース削除 ＋ 禁則文字を「_」に置換）
+        val rawLabel = label.ifBlank { "未分類" }
+        val sanitizedLabel = com.hazuki.imageorganizer.data.RenameMoveHelper.sanitizeForFilename(rawLabel.replace(" ", ""))
+
+        val zipDir = currentZipDir
+        val treeUri = currentFolderUri
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                var successCount = 0
+                val expectedNewNames = mutableSetOf<String>()
+
+                when {
+                    // ---- ① SAFフォルダの場合 ----
+                    treeUri != null -> {
+                        val resolver = getApplication<android.app.Application>().contentResolver
+                        val treeDocId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                        val parentDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+
+                        // 【統合スキャン】現在のフォルダ ＋ 直下にラベルフォルダがあればその中のファイル名も合算
+                        val currentFolderNames = allImages.map { it.displayName }
+                        val subFolderUri = fileOps.findSubFolderUriSaf(resolver, treeUri, parentDocUri, sanitizedLabel)
+                        val subFolderNames = if (subFolderUri != null) {
+                            fileOps.queryFolderChildNamesSaf(treeUri, subFolderUri)
+                        } else {
+                            emptyList()
+                        }
+                        val combinedNames = currentFolderNames + subFolderNames
+                        val groupIndex = com.hazuki.imageorganizer.data.RenameMoveHelper.findNextGroupIndexFromNames(combinedNames, sanitizedLabel)
+                        val groupCode = com.hazuki.imageorganizer.data.RenameMoveHelper.toSeqCode(groupIndex)
+
+                        // ロールバック用：(アイテム, 元のファイル名)
+                        val renamedItems = mutableListOf<Pair<ImageItem, String>>()
+                        var failedIndex = -1
+
+                        for ((index, item) in targets.withIndex()) {
+                            val imageCode = com.hazuki.imageorganizer.data.RenameMoveHelper.toSeqCode(index + 1) // 1枚目=01, 5枚目=05
+                            val ext = item.extension
+                            val newName = if (ext.isNotBlank()) {
+                                "${sanitizedLabel}_${groupCode}_${imageCode}.$ext"
+                            } else {
+                                "${sanitizedLabel}_${groupCode}_${imageCode}"
+                            }
+                            try {
+                                android.provider.DocumentsContract.renameDocument(resolver, item.uri, newName)
+                                renamedItems.add(item to item.displayName)
+                                expectedNewNames.add(newName)
+                                successCount++
+                            } catch (e: Exception) {
+                                failedIndex = index + 1
+                                break
+                            }
+                        }
+
+                        // 途中で失敗した場合：それまでリネームしたファイルを元の名前に戻す（ロールバック）
+                        if (failedIndex != -1) {
+                            renamedItems.asReversed().forEach { (origItem, origName) ->
+                                try {
+                                    android.provider.DocumentsContract.renameDocument(resolver, origItem.uri, origName)
+                                } catch (e: Exception) {}
+                            }
+                            _uiState.update { 
+                                it.copy(snackbarMessage = "エラー: ${targets.size}枚中 ${failedIndex}枚目のリネームに失敗したため処理を中断し、元の名前に戻しました") 
+                            }
+                            return@launch
+                        }
+                    }
+
+                    // ---- ② ローカルフォルダの場合 ----
+                    zipDir != null -> {
+                        val sourceFiles = targets.mapNotNull { item ->
+                            item.uri.path?.let { java.io.File(it) }
+                        }
+                        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.renameInPlace(sourceFiles, sanitizedLabel)
+                        when (result) {
+                            is com.hazuki.imageorganizer.data.RenameMoveHelper.Result.Success -> {
+                                successCount = result.count
+                            }
+                            is com.hazuki.imageorganizer.data.RenameMoveHelper.Result.Failure -> {
+                                _uiState.update { 
+                                    it.copy(snackbarMessage = "エラー: ${result.total}枚中 ${result.succeededCount + 1}枚目で失敗したため処理を中断し、元の名前に戻しました") 
+                                }
+                                return@launch
+                            }
+                            is com.hazuki.imageorganizer.data.RenameMoveHelper.Result.TooMany -> {
+                                _uiState.update { it.copy(snackbarMessage = "上限超過: 一度に処理できる上限を超えています") }
+                                return@launch
+                            }
+                        }
+                    }
+
+                    // ---- ③ 既定フォルダの場合 ----
+                    else -> {
+                        _uiState.update { it.copy(snackbarMessage = "この操作を行うには、上部の📁アイコンから対象フォルダを選択して開いてください") }
+                        return@launch
+                    }
+                }
+
+                // リネーム後も選択を維持するため、新ファイル名をセット
+                if (expectedNewNames.isNotEmpty()) {
+                    pendingSelectByName = expectedNewNames
+                }
+
+                _uiState.update { it.copy(snackbarMessage = "${successCount}枚を「${sanitizedLabel}_連番」にリネームしました") }
+                reloadCurrentFolder(0)
+
+            } catch (e: Exception) {
+                _uiState.update { it.copy(snackbarMessage = "リネーム中にエラーが発生しました: ${e.localizedMessage}") }
+            }
+        }
     }
 
     /**
-     * 【ファイル削除】
+     * 【選択画像の削除実行】
+     * 既存の deleteSelected() を安全に呼び出します。
      */
-    fun executeDelete(sourceFiles: List<java.io.File>) {
-        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.deleteFiles(sourceFiles)
-        _uiState.update { it.copy(snackbarMessage = "削除完了: ${result}") }
+    fun executeDeleteSelected() {
+        deleteSelected(visibleIndex = 0)
     }
 
     /**
-     * 【フォルダ内一括ラベル変更】
+     * 【フォルダ内の一括ラベル変更】
+     * 現在開いているフォルダ内の対象ファイル名の「旧ラベル」部分を「新ラベル」に一括置換します。
      */
-    fun executeRenameGroupLabel(
-        folder: java.io.File,
-        oldLabel: String,
-        newLabel: String
-    ) {
-        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.renameGroupLabel(
-            folder = folder,
-            oldLabel = oldLabel,
-            newLabel = newLabel
-        )
-        _uiState.update { it.copy(snackbarMessage = "一括変更完了: ${result}") }
+    fun executeRenameGroupLabel(newLabel: String) {
+        val rawLabel = newLabel.ifBlank { "未分類" }
+        val sanitizedNewLabel = com.hazuki.imageorganizer.data.RenameMoveHelper.sanitizeForFilename(rawLabel.replace(" ", ""))
+
+        val zipDir = currentZipDir
+        val treeUri = currentFolderUri
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                var successCount = 0
+
+                when {
+                    // ---- ① SAFフォルダの場合 ----
+                    treeUri != null -> {
+                        val resolver = getApplication<android.app.Application>().contentResolver
+                        // 全ファイルの中から、RenameMoveHelperの形式に一致するものを抽出
+                        val parseTargets = allImages.mapNotNull { item ->
+                            val parsed = com.hazuki.imageorganizer.data.RenameMoveHelper.parseSeqName(item.displayName)
+                            if (parsed != null) Pair(item, parsed) else null
+                        }
+
+                        for ((item, parsed) in parseTargets) {
+                            try {
+                                val groupCode = com.hazuki.imageorganizer.data.RenameMoveHelper.toSeqCode(parsed.groupIndex)
+                                val imageCode = com.hazuki.imageorganizer.data.RenameMoveHelper.toSeqCode(parsed.imageIndex)
+                                val ext = item.extension
+                                val newName = if (ext.isNotBlank()) {
+                                    "${sanitizedNewLabel}_${groupCode}_${imageCode}.$ext"
+                                } else {
+                                    "${sanitizedNewLabel}_${groupCode}_${imageCode}"
+                                }
+                                android.provider.DocumentsContract.renameDocument(resolver, item.uri, newName)
+                                successCount++
+                            } catch (e: Exception) {
+                                // 個別の失敗はスキップ
+                            }
+                        }
+                    }
+
+                    // ---- ② ローカルフォルダの場合 ----
+                    zipDir != null -> {
+                        val oldLabel = _uiState.value.currentSelectedLabel.replace(" ", "")
+                        val result = com.hazuki.imageorganizer.data.RenameMoveHelper.renameGroupLabel(zipDir, oldLabel, sanitizedNewLabel)
+                        if (result is com.hazuki.imageorganizer.data.RenameMoveHelper.Result.Success) {
+                            successCount = result.count
+                        }
+                    }
+
+                    else -> {
+                        _uiState.update { it.copy(snackbarMessage = "この操作を行うには、上部の📁アイコンから対象フォルダを選択して開いてください") }
+                        return@launch
+                    }
+                }
+
+                _uiState.update { it.copy(snackbarMessage = "${successCount}件のラベル名を「$sanitizedNewLabel」に一括変更しました") }
+                reloadCurrentFolder(0)
+
+            } catch (e: Exception) {
+                _uiState.update { it.copy(snackbarMessage = "一括変更中にエラーが発生しました: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    /**
+     * 【選択画像のコピー】
+     * ユーザーが選択した別フォルダへ、選択中の画像をそのままの名前でコピーします。
+     * 
+     * @param destTreeUri コピー先のフォルダUri（SAF）
+     */
+    fun executeCopySelectedTo(destTreeUri: Uri) {
+        val targets = selectedImages()
+        if (targets.isEmpty()) {
+            _uiState.update { it.copy(snackbarMessage = "コピー対象の画像が選択されていません") }
+            return
+        }
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val resolver = getApplication<android.app.Application>().contentResolver
+            try {
+                val destDocId = android.provider.DocumentsContract.getTreeDocumentId(destTreeUri)
+                val destFolderUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(destTreeUri, destDocId)
+                var successCount = 0
+
+                for (item in targets) {
+                    try {
+                        val newDocUri = android.provider.DocumentsContract.createDocument(
+                            resolver, destFolderUri, item.mimeType, item.displayName
+                        )
+                        if (newDocUri != null) {
+                            resolver.openInputStream(item.uri)?.use { input ->
+                                resolver.openOutputStream(newDocUri)?.use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                            successCount++
+                        }
+                    } catch (e: Exception) {
+                        // 個別の失敗はスキップして継続
+                    }
+                }
+
+                _uiState.update { it.copy(snackbarMessage = "${successCount}枚の画像をコピーしました") }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(snackbarMessage = "コピー中にエラーが発生しました: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    /**
+     * 【選択画像の移動】
+     * ユーザーが選択した別フォルダへ、選択中の画像を移動します。
+     * コピー完了後に元ファイルを削除し、画面を最新状態に更新します。
+     * 
+     * @param destTreeUri 移動先のフォルダUri（SAF）
+     */
+    fun executeMoveSelectedTo(destTreeUri: Uri) {
+        val targets = selectedImages()
+        if (targets.isEmpty()) {
+            _uiState.update { it.copy(snackbarMessage = "移動対象の画像が選択されていません") }
+            return
+        }
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val resolver = getApplication<android.app.Application>().contentResolver
+            try {
+                val destDocId = android.provider.DocumentsContract.getTreeDocumentId(destTreeUri)
+                val destFolderUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(destTreeUri, destDocId)
+                var successCount = 0
+
+                for (item in targets) {
+                    try {
+                        val newDocUri = android.provider.DocumentsContract.createDocument(
+                            resolver, destFolderUri, item.mimeType, item.displayName
+                        )
+                        if (newDocUri != null) {
+                            var copyOk = false
+                            resolver.openInputStream(item.uri)?.use { input ->
+                                resolver.openOutputStream(newDocUri)?.use { output ->
+                                    input.copyTo(output)
+                                    copyOk = true
+                                }
+                            }
+                            // コピーに成功したら元ファイルを削除
+                            if (copyOk) {
+                                android.provider.DocumentsContract.deleteDocument(resolver, item.uri)
+                                successCount++
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // 個別の失敗はスキップして継続
+                    }
+                }
+
+                removeImagesFromAllGroups(targets.map { it.id })
+                clearSelection()
+                _uiState.update { it.copy(snackbarMessage = "${successCount}枚の画像を移動しました") }
+                reloadCurrentFolder(0)
+            } catch (e: Exception) {
+                _uiState.update { it.copy(snackbarMessage = "移動中にエラーが発生しました: ${e.localizedMessage}") }
+            }
+        }
     }
 }

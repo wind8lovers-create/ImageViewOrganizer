@@ -77,6 +77,9 @@ data class OrganizerUiState(
     val extensionSelectionActive: Boolean = false, // ON/OFF(上部バーの「拡張選択」ボタンの反転状態と対応)
     val originImageId: Long? = null, // 基準画像のID
     val hashMatchEnabled: Boolean = false, // ON: 知覚ハッシュが近い(=ほぼ同一の)画像のみ表示
+    val hashMatchThreshold: Int = 10, // ハッシュ許容閾値(1〜40)。値が小さいほど完全一致、大きいほど大まか一致
+    val hashProgressText: String? = null, // ハッシュ値計算中の進捗メッセージ(例: "ハッシュ計算中... 120/500枚 (24%)")
+    val extensionGroupColors: Map<Long, Char> = emptyMap(), // 重複画像グループごとの色分け(画像ID -> 'A'..'Z')。グリッドの枠線色分けに使用
     val saturationTolerance: Float = 0f, // 0f〜0.35f。0fはこの項目では絞り込まない
     val brightnessTolerance: Float = 0f, // 0f〜0.35f。0fはこの項目では絞り込まない
     val colorPresetStep: Int = 0, // 0=OFF, 1=A, 2=B, 3=C。「プリセット」ボタンを押すたびにローテーションする

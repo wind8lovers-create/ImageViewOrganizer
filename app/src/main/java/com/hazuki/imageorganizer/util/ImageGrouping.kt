@@ -23,19 +23,22 @@ object ImageGrouping {
 
     /**
      * @param images ハッシュ計算済みの画像リスト(表示順)
-     * @param threshold ハミング距離の許容閾値(この値以下なら同一グループ)
-     * @param saturationTolerance 彩度平均値の許容差(0f〜1f)。nullなら彩度は判定に使わない。
-     * @param brightnessTolerance 明度平均値の許容差(0f〜1f)。nullなら明度は判定に使わない。
+     * @param threshold ハミング距離の許容閾値(この値以下なら同一グループ)。nullならハッシュ判定スキップ
+     * @param saturationTolerance 彩度平均値の許容差(0f〜1f)。nullまたは0f以下なら彩度は判定に使わない。
+     * @param brightnessTolerance 明度平均値の許容差(0f〜1f)。nullまたは0f以下なら明度は判定に使わない。
+     * @param styleMatchThreshold RGB5色類似度の最小閾値(0.0〜100.0)。0f以下ならRGB5色は判定に使わない。
      * @return グループID -> 画像リスト のマップ(グループ化できた=2枚以上のもののみ)
      */
     fun group(
         images: List<ImageItem>,
-        threshold: Int,
+        threshold: Int?,
         saturationTolerance: Float? = null,
-        brightnessTolerance: Float? = null
+        brightnessTolerance: Float? = null,
+        styleMatchThreshold: Float = 0f
     ): Map<Int, List<ImageItem>> {
-        val hashed = images.filter { it.perceptualHash != null }
-        val parent = IntArray(hashed.size) { it }
+        // ハッシュ値が必要な場合はハッシュ値があるもの、それ以外は画像リスト全体を対象にする
+        val targets = if (threshold != null) images.filter { it.perceptualHash != null } else images
+        val parent = IntArray(targets.size) { it }
 
         fun find(x: Int): Int {
             var r = x
@@ -55,31 +58,46 @@ object ImageGrouping {
             if (ra != rb) parent[ra] = rb
         }
 
-        for (i in hashed.indices) {
-            for (j in i + 1 until hashed.size) {
-                val hi = hashed[i].perceptualHash ?: continue
-                val hj = hashed[j].perceptualHash ?: continue
-                if (PerceptualHash.hammingDistance(hi, hj) > threshold) continue
+        // フォルダ内の全画像ペアを総当たりで比較し、条件を満たすペアをグループとして結合
+        for (i in targets.indices) {
+            for (j in i + 1 until targets.size) {
+                // 1. ハッシュ値の比較（指定時のみ）
+                if (threshold != null) {
+                    val hi = targets[i].perceptualHash ?: continue
+                    val hj = targets[j].perceptualHash ?: continue
+                    if (PerceptualHash.hammingDistance(hi, hj) > threshold) continue
+                }
 
-                if (saturationTolerance != null) {
-                    val si = hashed[i].avgSaturation
-                    val sj = hashed[j].avgSaturation
+                // 2. 彩度の比較（指定時のみ）
+                if (saturationTolerance != null && saturationTolerance > 0f) {
+                    val si = targets[i].avgSaturation
+                    val sj = targets[j].avgSaturation
                     if (si != null && sj != null && kotlin.math.abs(si - sj) > saturationTolerance) continue
                 }
-                if (brightnessTolerance != null) {
-                    val bi = hashed[i].avgBrightness
-                    val bj = hashed[j].avgBrightness
+
+                // 3. 明度の比較（指定時のみ）
+                if (brightnessTolerance != null && brightnessTolerance > 0f) {
+                    val bi = targets[i].avgBrightness
+                    val bj = targets[j].avgBrightness
                     if (bi != null && bj != null && kotlin.math.abs(bi - bj) > brightnessTolerance) continue
                 }
 
+                // 4. RGB5色パレットの類似度比較（指定時のみ）
+                if (styleMatchThreshold > 0f) {
+                    val pi = targets[i].colorPalette
+                    val pj = targets[j].colorPalette
+                    if (pi == null || pj == null || ColorPalette.similarity(pi, pj) * 100f < styleMatchThreshold) continue
+                }
+
+                // 全条件をクリアした画像同士を同じグループとして結合（Union）
                 union(i, j)
             }
         }
 
         val groups = mutableMapOf<Int, MutableList<ImageItem>>()
-        for (i in hashed.indices) {
+        for (i in targets.indices) {
             val root = find(i)
-            groups.getOrPut(root) { mutableListOf() }.add(hashed[i])
+            groups.getOrPut(root) { mutableListOf() }.add(targets[i])
         }
 
         // 1枚だけのグループは「グループなし(単独画像)」扱いにするため除外

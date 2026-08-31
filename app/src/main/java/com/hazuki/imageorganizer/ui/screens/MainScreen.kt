@@ -8,15 +8,26 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.text.font.FontWeight
+import com.hazuki.imageorganizer.ui.theme.FujiPrimary
+import com.hazuki.imageorganizer.ui.theme.FujiPrimaryDark
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -39,6 +50,10 @@ import com.hazuki.imageorganizer.ui.components.SortBottomSheet
 import com.hazuki.imageorganizer.ui.theme.WashiBackground
 import com.hazuki.imageorganizer.viewmodel.ImageOrganizerViewModel
 import com.hazuki.imageorganizer.viewmodel.ScreenMode
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,6 +91,30 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
             }
             val label = uri.lastPathSegment?.substringAfterLast('/') ?: "選択したZIP"
             viewModel.openZipFile(uri, label)
+        }
+    }
+
+    // コピーまたは移動のどちらを待機しているかを保持する状態（"COPY" または "MOVE"）
+    var pendingTransferMode by remember { mutableStateOf<String?>(null) }
+
+    // コピー・移動用の保存先フォルダを選択するランチャー
+    val transferFolderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (e: SecurityException) {
+                // 一部ストレージで永続権限が取れない場合でも現在の操作は続行
+            }
+            when (pendingTransferMode) {
+                "COPY" -> viewModel.executeCopySelectedTo(uri)
+                "MOVE" -> viewModel.executeMoveSelectedTo(uri)
+            }
+            pendingTransferMode = null
         }
     }
 
@@ -166,6 +205,8 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     onCyclePreset = { viewModel.cyclePresetStep() },
                     hashMatchEnabled = state.hashMatchEnabled,
                     onToggleHashMatch = { viewModel.toggleHashMatch(it) },
+                    hashMatchThreshold = state.hashMatchThreshold,
+                    onHashMatchThresholdChange = { viewModel.setHashMatchThreshold(it) },
                     aspectRatioOnly = state.aspectRatioOnly,
                     onToggleAspectRatioOnly = { viewModel.toggleAspectRatioOnly(it) },
                     styleMatchThreshold = state.styleMatchThreshold,
@@ -193,7 +234,13 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     onSortClick = { viewModel.toggleSortSheet(true) },
                     // ---- ラベル関連（新規） ----
                     displayLabel = state.currentSelectedLabel,
-                    onLabelSelectClick = { /* TODO: ラベル選択ダイアログを開く */ },
+                    onLabelSelectClick = { /* 今後の使用に備えて予約済み */ },
+                    // 【ラベル選択ダイアログ実装】
+                    // □▷ ボタンをタップでドロップダウンメニュー表示
+                    // ラベルをタップすると、ViewModel に通知して現在選択中ラベルを更新
+                    onLabelSelected = { selectedLabel ->
+                        viewModel.setCurrentSelectedLabel(selectedLabel)
+                    },
                     // ---- 選択モード・リネーム機能 ----
                     selectedCount = state.selectedCount,
                     currentLabel = state.currentSelectedLabel,
@@ -205,26 +252,32 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     onJumpToSelected = { viewModel.jumpToNextSelected() },
                     onJumpToSelectedLongClick = { viewModel.jumpToFirstSelected() },
                     onRenameMove = {
-                        // 実装予定：選択されたファイルをリネーム＆移動
-                        // TODO: フォルダピッカーから dest を取得して実行
+                        // 【連番→📁[ラベル]】選択された画像を「ラベル」フォルダへ連番移動
+                        // 例:「01 犬」が選ばれていれば「01犬」フォルダを作成して「01犬_00_00.jpg」のように連番移動
+                        viewModel.executeRenameMove(state.currentSelectedLabel)
                     },
                     onRenameOnly = {
-                        // 実装予定：選択されたファイルをその場でリネーム
-                        // TODO: ファイルリストから実行
+                        // 【Rename→[ラベル]連番】移動はせず、現在のフォルダ内で連番リネーム
+                        // 例:「01犬_00_00.jpg」のように同じフォルダ内で名前を変更
+                        viewModel.executeRenameOnly(state.currentSelectedLabel)
                     },
                     onCopyRequested = {
-                        // 実装予定：フォルダピッカーを開く（コピー先選択）
+                        // 【コピー】保存先フォルダ選択ピッカーを開き、選んだフォルダへ画像をコピー
+                        pendingTransferMode = "COPY"
+                        transferFolderPickerLauncher.launch(null)
                     },
                     onMoveRequested = {
-                        // 実装予定：フォルダピッカーを開く（移動先選択）
+                        // 【移動】移動先フォルダ選択ピッカーを開き、選んだフォルダへ画像を移動
+                        pendingTransferMode = "MOVE"
+                        transferFolderPickerLauncher.launch(null)
                     },
                     onDeleteConfirmed = {
-                        // 実装予定：選択されたファイルを削除
-                        // TODO: ファイルリストから実行
+                        // 【削除】選択された画像を削除（確認ダイアログで「削除する」が押された後に実行）
+                        viewModel.executeDeleteSelected()
                     },
                     onRenameGroupLabel = {
-                        // 実装予定：フォルダ内の一括ラベル変更
-                        // TODO: ファイルリストから実行
+                        // 【[ラベル]📁一括変更】フォルダ内の対象ファイル名のラベルを一括置換
+                        viewModel.executeRenameGroupLabel(state.currentSelectedLabel)
                     }
                 )
                 }
@@ -274,7 +327,8 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                                         val id = state.entries.getOrNull(index)?.id
                                         if (id != null) viewModel.handleLongPress(id)
                                     },
-                                    groupedImageIds = state.groupedImageIds,
+                                    // 拡張選択モード中は、重複グループごとに計算された枠線色(A〜Z)を適用してグループを見分けやすくする
+                                    groupedImageIds = if (state.extensionSelectionActive) state.extensionGroupColors else state.groupedImageIds,
                                     dimmedIds = dimmedIds,
                                     modifier = Modifier.fillMaxSize().padding(padding)
                                 )
@@ -310,6 +364,37 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                                 onPageSettled = { key -> viewModel.openGroupDetail(key) },
                                 modifier = Modifier.fillMaxSize()
                             )
+                        }
+                    }
+
+                    // ---- ハッシュ値計算中の進捗オーバーレイ（読み込みパーセント・枚数表示） ----
+                    if (state.hashProgressText != null) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f),
+                            shape = RoundedCornerShape(20.dp),
+                            shadowElevation = 6.dp,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = padding.calculateTopPadding() + 8.dp)
+                                .padding(horizontal = 16.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.5.dp,
+                                    color = FujiPrimary
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = state.hashProgressText ?: "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = FujiPrimaryDark,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }

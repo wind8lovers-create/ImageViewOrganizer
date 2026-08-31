@@ -1,0 +1,371 @@
+package com.example.yourapp.data // ご自身のアプリのパッケージ名に変更してください
+
+import java.io.File
+
+/**
+ * =====================================================================
+ * 【ファイル操作・連番リネーム ヘルパークラス】
+ *
+ * ■ 命名規則: [ラベル名]_[グループ番号2文字]_[画像番号2文字].[拡張子]
+ *   例: 猫_00_00.jpg, 猫_00_01.jpg, 猫_AA_00.jpg
+ *
+ * ■ 2文字固定カウント方式（最大776通り）:
+ *   ・0 〜 99   ➔ "00" 〜 "99" (100通り)
+ *   ・100 〜 775 ➔ "AA" 〜 "ZZ" (26 × 26 = 676通り)
+ * =====================================================================
+ */
+object RenameMoveHelper {
+
+    /** 2文字で表現できる上限数（00〜99 + AA〜ZZ） */
+    const val MAX_SEQUENCE = 776
+
+    /** 実行モード（移動 or コピー） */
+    enum class ExecuteMode { MOVE, COPY }
+
+    /** 処理の結果を安全に受け取るためのクラス */
+    sealed class Result {
+        /** 成功時（成功した件数, 保存先フォルダ） */
+        data class Success(val count: Int, val destFolder: File) : Result()
+
+        /** 失敗時（途中で成功した件数, 全体件数, 後始末の失敗有無） */
+        data class Failure(
+            val succeededCount: Int,
+            val total: Int,
+            val cleanupFailed: Boolean
+        ) : Result()
+
+        /** 枚数上限（776枚）を超えた場合 */
+        data class TooMany(val requested: Int) : Result()
+    }
+
+    /**
+     * 【数値 ➔ 2文字コード変換】
+     * 0始まりの通し番号を、2文字の連番文字列に変換します。
+     * 例: 0 -> "00", 99 -> "99", 100 -> "AA", 775 -> "ZZ"
+     */
+    fun toSeqCode(n: Int): String {
+        require(n in 0 until MAX_SEQUENCE) { "連番の上限(776)を超えています: $n" }
+        return if (n < 100) {
+            // 0〜99は数字2桁（0埋め）
+            "%02d".format(n)
+        } else {
+            // 100〜775はアルファベット2文字
+            val letterIndex = n - 100 // 0 〜 675
+            val first = 'A' + (letterIndex / 26)
+            val second = 'A' + (letterIndex % 26)
+            "$first$second"
+        }
+    }
+
+    /**
+     * 【2文字コード ➔ 数値変換】
+     * "00"〜"ZZ" の2文字コードを、元の0始まりの数値に戻します。
+     * 不正な文字列の場合は null を返します。
+     */
+    fun fromSeqCode(code: String): Int? {
+        if (code.length != 2) return null
+        return if (code[0].isDigit() && code[1].isDigit()) {
+            // "00"〜"99"
+            code.toIntOrNull()?.takeIf { it in 0..99 }
+        } else if (code[0] in 'A'..'Z' && code[1] in 'A'..'Z') {
+            // "AA"〜"ZZ"
+            100 + (code[0] - 'A') * 26 + (code[1] - 'A')
+        } else {
+            null
+        }
+    }
+
+    /**
+     * 【ファイル名の禁則文字除去】
+     * WindowsやAndroidで使えない記号（/ \ : * ? " < > |）を「_」に置き換えます。
+     * ひらがな、カタカナ、漢字、英数字はそのまま使えます。
+     */
+    fun sanitizeForFilename(name: String): String {
+        val invalidChars = charArrayOf('/', '\\', ':', '*', '?', '"', '<', '>', '|')
+        val sanitized = name
+            .map { c -> if (c in invalidChars || c.code < 0x20) '_' else c }
+            .joinToString("")
+            .trim()
+        return sanitized.ifBlank { "untitled" }
+    }
+
+    /**
+     * 【既存ファイルを読み取って、次のグループ番号を探す】
+     * フォルダ内の既存ファイル（同じラベル名で始まるもの）をスキャンし、
+     * 次に使うべきグループ番号（0始まり）を自動計算して返します。
+     */
+    fun findNextGroupIndex(destFolder: File, sanitizedLabel: String): Int {
+        if (!destFolder.exists() || !destFolder.isDirectory) return 0
+
+        // パターン: [ラベル名]_[グループ2文字]_[画像番号2文字].[拡張子]
+        val pattern = Regex("^${Regex.escape(sanitizedLabel)}_([0-9A-Z]{2})_([0-9A-Z]{2})\\..+$")
+        var maxIndex = -1
+
+        destFolder.listFiles()?.forEach { file ->
+            val match = pattern.matchEntire(file.name) ?: return@forEach
+            val groupCode = match.groupValues[1] // グループ2文字
+            val groupIndex = fromSeqCode(groupCode) ?: return@forEach
+            if (groupIndex > maxIndex) {
+                maxIndex = groupIndex
+            }
+        }
+        // 見つかった最大番号の「次 (+1)」を返します（無ければ 0）
+        return maxIndex + 1
+    }
+
+    /**
+     * 【① 連番リネーム ＋ ラベル名フォルダを作成して移動/コピー】
+     *
+     * @param sourceFiles    選択された元ファイル一覧（並び順どおりに 00, 01... と番号が付きます）
+     * @param destFolderRoot 保存先の親フォルダ（この中に「ラベル名」のフォルダが作られます）
+     * @param label          ラベル名（例: "猫"）
+     * @param mode           MOVE（移動）または COPY（コピー）
+     */
+    fun execute(
+        sourceFiles: List<File>,
+        destFolderRoot: File,
+        label: String,
+        mode: ExecuteMode
+    ): Result {
+        if (sourceFiles.isEmpty()) return Result.Success(0, destFolderRoot)
+        if (sourceFiles.size > MAX_SEQUENCE) return Result.TooMany(sourceFiles.size)
+
+        // 1. ラベル名の安全化とフォルダ作成
+        val sanitizedLabel = sanitizeForFilename(label)
+        val labelFolder = File(destFolderRoot, sanitizedLabel)
+        if (!labelFolder.exists()) {
+            labelFolder.mkdirs()
+        }
+
+        // 2. ラベルフォルダ内の既存ファイルから次のグループ番号を取得
+        val groupIndex = findNextGroupIndex(labelFolder, sanitizedLabel)
+        if (groupIndex >= MAX_SEQUENCE) {
+            return Result.TooMany(sourceFiles.size)
+        }
+        val groupCode = toSeqCode(groupIndex)
+
+        // 3. 安全のため、まずは全件「コピー」を行う
+        val copiedFiles = mutableListOf<File>()
+        for ((i, srcFile) in sourceFiles.withIndex()) {
+            val imageCode = toSeqCode(i)
+            val ext = srcFile.extension
+            val destFileName = if (ext.isNotBlank()) {
+                "${sanitizedLabel}_${groupCode}_${imageCode}.$ext"
+            } else {
+                "${sanitizedLabel}_${groupCode}_${imageCode}"
+            }
+            val destFile = File(labelFolder, destFileName)
+
+            val copyOk = try {
+                srcFile.copyTo(destFile, overwrite = false)
+                true
+            } catch (e: Exception) {
+                false
+            }
+
+            if (!copyOk) {
+                // 途中で失敗した場合：作成したコピー先ファイルを削除して元に戻す（元ファイルは触らない）
+                var cleanupFailed = false
+                copiedFiles.forEach { f ->
+                    if (f.exists() && !f.delete()) cleanupFailed = true
+                }
+                return Result.Failure(
+                    succeededCount = i,
+                    total = sourceFiles.size,
+                    cleanupFailed = cleanupFailed
+                )
+            }
+            copiedFiles.add(destFile)
+        }
+
+        // 4. 全件コピー成功。「移動」モードの時だけ、最後に元ファイルを削除
+        if (mode == ExecuteMode.MOVE) {
+            sourceFiles.forEach { it.delete() }
+        }
+
+        return Result.Success(sourceFiles.size, labelFolder)
+    }
+
+    /**
+     * 【② 同じフォルダ内で連番リネームのみ実行】
+     * フォルダ移動はせず、現在のフォルダの中で [ラベル名]_[グループ]_[連番] に名前を変えます。
+     * 途中で失敗した場合は自動的に元の名前にロールバック（復元）します。
+     */
+    fun renameInPlace(sourceFiles: List<File>, label: String): Result {
+        if (sourceFiles.isEmpty()) return Result.Success(0, File("."))
+        if (sourceFiles.size > MAX_SEQUENCE) return Result.TooMany(sourceFiles.size)
+
+        val parent = sourceFiles.first().parentFile ?: return Result.Failure(0, sourceFiles.size, false)
+        val sanitizedLabel = sanitizeForFilename(label)
+        val groupIndex = findNextGroupIndex(parent, sanitizedLabel)
+        if (groupIndex >= MAX_SEQUENCE) return Result.TooMany(sourceFiles.size)
+        val groupCode = toSeqCode(groupIndex)
+
+        val renamedPairs = mutableListOf<Pair<File, File>>()
+        for ((i, srcFile) in sourceFiles.withIndex()) {
+            val imageCode = toSeqCode(i)
+            val ext = srcFile.extension
+            val newName = if (ext.isNotBlank()) {
+                "${sanitizedLabel}_${groupCode}_${imageCode}.$ext"
+            } else {
+                "${sanitizedLabel}_${groupCode}_${imageCode}"
+            }
+            val newFile = File(parent, newName)
+            val ok = try {
+                srcFile.renameTo(newFile)
+            } catch (e: Exception) {
+                false
+            }
+
+            if (!ok) {
+                // 失敗時：それまでリネームしたファイルを元の名前に戻す
+                var rollbackFailed = false
+                renamedPairs.asReversed().forEach { (original, renamed) ->
+                    if (renamed.exists() && !renamed.renameTo(original)) rollbackFailed = true
+                }
+                return Result.Failure(succeededCount = i, total = sourceFiles.size, cleanupFailed = rollbackFailed)
+            }
+            renamedPairs.add(srcFile to newFile)
+        }
+        return Result.Success(sourceFiles.size, parent)
+    }
+
+    /**
+     * 【③ そのままコピー / 移動】
+     * 連番リネームは行わず、指定フォルダへそのままの名前でコピーまたは移動します。
+     */
+    fun copyOrMovePlain(sourceFiles: List<File>, destFolder: File, mode: ExecuteMode): Result {
+        if (sourceFiles.isEmpty()) return Result.Success(0, destFolder)
+        if (!destFolder.exists()) destFolder.mkdirs()
+
+        val copiedFiles = mutableListOf<File>()
+        for ((i, srcFile) in sourceFiles.withIndex()) {
+            val destFile = File(destFolder, srcFile.name)
+            val copyOk = try {
+                srcFile.copyTo(destFile, overwrite = false)
+                true
+            } catch (e: Exception) {
+                false
+            }
+
+            if (!copyOk) {
+                var cleanupFailed = false
+                copiedFiles.forEach { f -> if (f.exists() && !f.delete()) cleanupFailed = true }
+                return Result.Failure(succeededCount = i, total = sourceFiles.size, cleanupFailed = cleanupFailed)
+            }
+            copiedFiles.add(destFile)
+        }
+
+        if (mode == ExecuteMode.MOVE) {
+            sourceFiles.forEach { it.delete() }
+        }
+        return Result.Success(sourceFiles.size, destFolder)
+    }
+
+    /**
+     * 【④ ファイル削除】
+     * 選択したファイルを完全に削除します。
+     */
+    fun deleteFiles(sourceFiles: List<File>): Result {
+        if (sourceFiles.isEmpty()) return Result.Success(0, File("."))
+        val parent = sourceFiles.first().parentFile ?: File(".")
+        for ((i, f) in sourceFiles.withIndex()) {
+            val ok = try { f.delete() } catch (e: Exception) { false }
+            if (!ok) {
+                return Result.Failure(succeededCount = i, total = sourceFiles.size, cleanupFailed = false)
+            }
+        }
+        return Result.Success(sourceFiles.size, parent)
+    }
+
+    /** 連番ファイル名の解析結果 */
+    data class ParsedSeqName(val label: String, val groupIndex: Int, val imageIndex: Int)
+
+    private val seqNamePattern = Regex("^(.+)_([0-9A-Z]{2})_([0-9A-Z]{2})\\.[^.]+$")
+
+    /**
+     * 【ファイル名の形式チェック＆分解】
+     * ファイル名が「ラベル_XX_XX.拡張子」か判定し、中身を分解して数値で返します。
+     */
+    fun parseSeqName(fileName: String): ParsedSeqName? {
+        val match = seqNamePattern.matchEntire(fileName) ?: return null
+        val label = match.groupValues[1]
+        val groupIndex = fromSeqCode(match.groupValues[2]) ?: return null
+        val imageIndex = fromSeqCode(match.groupValues[3]) ?: return null
+        return ParsedSeqName(label, groupIndex, imageIndex)
+    }
+
+    /**
+     * 【⑤ フォルダ内一括ラベル変更】
+     * フォルダ内の既存連番ファイルの「ラベル名」だけを新しいラベル名に一括置換します。
+     */
+    fun renameGroupLabel(folder: File, oldLabel: String, newLabel: String): Result {
+        if (!folder.exists() || !folder.isDirectory) return Result.Failure(0, 0, false)
+        val allFiles = folder.listFiles()?.toList() ?: return Result.Success(0, folder)
+
+        data class TargetFile(val file: File, val parsed: ParsedSeqName)
+        val targets = allFiles.mapNotNull { f ->
+            parseSeqName(f.name)?.let { TargetFile(f, it) }
+        }
+        if (targets.isEmpty()) return Result.Success(0, folder)
+
+        val sameLabel = targets.filter { it.parsed.label == oldLabel }
+        val otherLabel = targets.filter { it.parsed.label != oldLabel }
+        val renamedPairs = mutableListOf<Pair<File, File>>()
+
+        // 同名カテゴリーのラベルを新ラベルに置換
+        for (target in sameLabel) {
+            val groupCode = toSeqCode(target.parsed.groupIndex)
+            val imageCode = toSeqCode(target.parsed.imageIndex)
+            val ext = target.file.extension
+            val newName = if (ext.isNotBlank()) "${newLabel}_${groupCode}_${imageCode}.$ext" else "${newLabel}_${groupCode}_${imageCode}"
+            val newFile = File(folder, newName)
+
+            val ok = try { target.file.renameTo(newFile) } catch (e: Exception) { false }
+            if (!ok) {
+                var rollbackFailed = false
+                renamedPairs.asReversed().forEach { (orig, ren) ->
+                    if (ren.exists() && !ren.renameTo(orig)) rollbackFailed = true
+                }
+                return Result.Failure(renamedPairs.size, targets.size, rollbackFailed)
+            }
+            renamedPairs.add(target.file to newFile)
+        }
+
+        // 別カテゴリーのファイルがある場合、グループ番号を続きから振り直して統一
+        val maxGroupIndex = if (sameLabel.isEmpty()) -1 else sameLabel.maxOf { it.parsed.groupIndex }
+        val otherGroups = otherLabel.groupBy { "${it.parsed.label}_${it.parsed.groupIndex}" }
+        var nextGroupIndex = maxGroupIndex + 1
+
+        for ((_, groupFiles) in otherGroups) {
+            if (nextGroupIndex >= MAX_SEQUENCE) {
+                var rollbackFailed = false
+                renamedPairs.asReversed().forEach { (orig, ren) ->
+                    if (ren.exists() && !ren.renameTo(orig)) rollbackFailed = true
+                }
+                return Result.TooMany(targets.size)
+            }
+
+            val groupCode = toSeqCode(nextGroupIndex)
+            for (target in groupFiles) {
+                val imageCode = toSeqCode(target.parsed.imageIndex)
+                val ext = target.file.extension
+                val newName = if (ext.isNotBlank()) "${newLabel}_${groupCode}_${imageCode}.$ext" else "${newLabel}_${groupCode}_${imageCode}"
+                val newFile = File(folder, newName)
+
+                val ok = try { target.file.renameTo(newFile) } catch (e: Exception) { false }
+                if (!ok) {
+                    var rollbackFailed = false
+                    renamedPairs.asReversed().forEach { (orig, ren) ->
+                        if (ren.exists() && !ren.renameTo(orig)) rollbackFailed = true
+                    }
+                    return Result.Failure(renamedPairs.size, targets.size, rollbackFailed)
+                }
+                renamedPairs.add(target.file to newFile)
+            }
+            nextGroupIndex++
+        }
+
+        return Result.Success(renamedPairs.size, folder)
+    }
+}

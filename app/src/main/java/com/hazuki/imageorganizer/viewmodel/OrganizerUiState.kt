@@ -76,6 +76,10 @@ data class OrganizerUiState(
     // 選択している画像がある時だけ使える(未選択時はそもそも起動しない)。
     val extensionSelectionActive: Boolean = false, // ON/OFF(上部バーの「拡張選択」ボタンの反転状態と対応)
     val originImageId: Long? = null, // 基準画像のID
+    // 下層フォルダ（サブフォルダ）も含めて読み込むかどうかのフラグ。
+    // デフォルトは false（現在のフォルダ直下のみ読み込み、高速化）。
+    // ★ボタン内の「下層📁:OFF / ON」ボタンで切り替え可能。
+    val includeSubFolders: Boolean = false,
     val hashMatchEnabled: Boolean = false, // ON: 知覚ハッシュが近い(=ほぼ同一の)画像のみ表示
     val hashMatchThreshold: Int = 10, // ハッシュ許容閾値(1〜40)。値が小さいほど完全一致、大きいほど大まか一致
     val hashProgressText: String? = null, // ハッシュ値計算中の進捗メッセージ(例: "ハッシュ計算中... 120/500枚 (24%)")

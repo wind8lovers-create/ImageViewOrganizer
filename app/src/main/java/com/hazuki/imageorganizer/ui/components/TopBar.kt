@@ -103,6 +103,10 @@ fun OrganizerTopBar(
     onBrightnessChange: (Float) -> Unit,
     colorPresetStep: Int,
     onCyclePreset: () -> Unit,
+    // 下層フォルダも含めて読み込むかどうかのフラグ（デフォルト: false = 現在のフォルダ直下のみ読み込み）
+    includeSubFolders: Boolean = false,
+    // 下層フォルダ読み込みのON/OFF切り替えコールバック
+    onToggleIncludeSubFolders: () -> Unit = {},
     hashMatchEnabled: Boolean,
     onToggleHashMatch: (Boolean) -> Unit,
     // ハッシュ値の許容閾値（1〜40、デフォルト10）。スライダーで調整可能
@@ -414,6 +418,9 @@ fun OrganizerTopBar(
                 onBrightnessChange = onBrightnessChange,
                 colorPresetStep = colorPresetStep,
                 onCyclePreset = onCyclePreset,
+                // 下層フォルダ読み込み状態と切り替えコールバックを伝達
+                includeSubFolders = includeSubFolders,
+                onToggleIncludeSubFolders = onToggleIncludeSubFolders,
                 hashMatchEnabled = hashMatchEnabled,
                 onToggleHashMatch = onToggleHashMatch,
                 hashMatchThreshold = hashMatchThreshold,
@@ -616,6 +623,10 @@ fun ExtensionSelectionPanel(
     onBrightnessChange: (Float) -> Unit,
     colorPresetStep: Int,
     onCyclePreset: () -> Unit,
+    // 下層フォルダも含めて読み込むかどうかのフラグ（デフォルト: false = 直下のみ）
+    includeSubFolders: Boolean = false,
+    // 下層フォルダ読み込みのON/OFF切り替えコールバック
+    onToggleIncludeSubFolders: () -> Unit = {},
     hashMatchEnabled: Boolean,
     onToggleHashMatch: (Boolean) -> Unit,
     // ハッシュ値の許容閾値（1〜40、デフォルト10）。スライダーで調整可能
@@ -682,11 +693,25 @@ fun ExtensionSelectionPanel(
                 color = FujiPrimaryDark
             )
 
+            // ---- プリセット切り替えボタン（SET:0 ➔ SET:A ➔ SET:B ➔ SET:C） ----
             FilterChip(
                 selected = colorPresetStep != 0,
                 onClick = onCyclePreset,
-                label = { Text("プリセット: ${presetStepLabel(colorPresetStep)}") },
+                label = { Text("SET:${presetStepLabel(colorPresetStep)}") },
                 modifier = Modifier.padding(start = 12.dp),
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = FujiPrimary,
+                    selectedLabelColor = Color.White
+                )
+            )
+
+            // ---- 下層フォルダ読み込み切り替えボタン（下層📁:OFF / 下層📁:ON） ----
+            // デフォルトはOFF（直下のみ）。タップしてONにすると下層フォルダも含めて再読込
+            FilterChip(
+                selected = includeSubFolders,
+                onClick = onToggleIncludeSubFolders,
+                label = { Text(if (includeSubFolders) "下層📁:ON" else "下層📁:OFF") },
+                modifier = Modifier.padding(start = 8.dp),
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = FujiPrimary,
                     selectedLabelColor = Color.White
@@ -719,24 +744,53 @@ fun ExtensionSelectionPanel(
                 )
             )
 
-            // ---- ハッシュ値 閾値スライダー（1〜20、RGB5色と同じ180dp幅） ----
+            // ---- ハッシュ値 マイナス［−］ボタン（-1 微調整） ----
+            IconButton(
+                onClick = { onHashMatchThresholdChange((hashMatchThreshold - 1).coerceIn(1, 17)) },
+                enabled = hashMatchEnabled && hashMatchThreshold > 1,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Text(
+                    text = "−",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (hashMatchEnabled && hashMatchThreshold > 1) FujiPrimaryDark else FujiPrimaryDark.copy(alpha = 0.3f)
+                )
+            }
+
+            // ---- ハッシュ値 閾値スライダー（1〜17、108dpの120% = 130dp幅） ----
             // スイッチがONのときだけ操作可能。数値が小さいほど厳密一致、大きいほど大まか一致
             Slider(
                 value = hashMatchThreshold.toFloat(),
-                onValueChange = { onHashMatchThresholdChange(it.toInt().coerceIn(1, 20)) },
-                valueRange = 1f..20f,
+                onValueChange = { onHashMatchThresholdChange(it.toInt().coerceIn(1, 17)) },
+                valueRange = 1f..17f,
                 enabled = hashMatchEnabled,
                 modifier = Modifier
-                    .width(180.dp) // RGB5色と同じ180dpの大型ロングストローク仕様
-                    .padding(horizontal = 4.dp),
+                    .width(130.dp) // 現在の108dpから120%（約130dp）に拡大し、指での操作性を向上
+                    .padding(horizontal = 2.dp),
                 colors = SliderDefaults.colors(thumbColor = FujiPrimaryDark, activeTrackColor = FujiPrimary)
             )
+
+            // ---- ハッシュ値 プラス［＋］ボタン（+1 微調整） ----
+            IconButton(
+                onClick = { onHashMatchThresholdChange((hashMatchThreshold + 1).coerceIn(1, 17)) },
+                enabled = hashMatchEnabled && hashMatchThreshold < 17,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Text(
+                    text = "＋",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (hashMatchEnabled && hashMatchThreshold < 17) FujiPrimaryDark else FujiPrimaryDark.copy(alpha = 0.3f)
+                )
+            }
+
             Text(
                 text = "$hashMatchThreshold",
                 style = MaterialTheme.typography.labelSmall,
                 color = if (hashMatchEnabled) FujiPrimaryDark else FujiPrimaryDark.copy(alpha = 0.4f),
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(end = 12.dp)
+                modifier = Modifier.padding(start = 2.dp, end = 12.dp)
             )
 
             // ---- RGB5色スライダー（180dp幅） ----
@@ -773,12 +827,12 @@ fun ExtensionSelectionPanel(
     }
 }
 
-/** プリセットステップのラベル表記 */
+/** プリセットステップのラベル表記（0 / A / B / C） */
 private fun presetStepLabel(step: Int): String = when (step) {
     1 -> "A"
     2 -> "B"
     3 -> "C"
-    else -> "OFF"
+    else -> "0"
 }
 
 /** 非線形スライダー変換（スライダー位置 ➔ 閾値%） */

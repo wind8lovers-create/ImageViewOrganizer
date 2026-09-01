@@ -160,8 +160,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             )
         }
         allImages = emptyList()
+        val includeSubFolders = _uiState.value.includeSubFolders
         viewModelScope.launch {
-            repository.loadDefaultFolderStreaming()
+            repository.loadDefaultFolderStreaming(includeSubFolders = includeSubFolders)
                 .onCompletion {
                     _uiState.update { s -> s.copy(isStreaming = false) }
                     applyDisplayList()
@@ -174,6 +175,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun openFolder(treeUri: Uri, label: String, recordHistory: Boolean = true, scrollTarget: Int = 0) {
         currentFolderUri = treeUri
         currentZipDir = null
+        val includeSubFolders = _uiState.value.includeSubFolders
         _uiState.update {
             it.copy(
                 isLoading = true,
@@ -191,7 +193,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
         viewModelScope.launch {
             try {
-                repository.loadFromTreeStreaming(treeUri)
+                repository.loadFromTreeStreaming(treeUri, includeSubFolders = includeSubFolders)
                     .onCompletion {
                         _uiState.update { s -> s.copy(isStreaming = false) }
                         applyDisplayList()
@@ -458,6 +460,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             it.copy(
                 extensionSelectionActive = true,
                 originImageId = origin?.id,
+                includeSubFolders = false, // ★ボタン起動時はデフォルトで「現在いるフォルダ直下のみ（下層📁:OFF）」
                 hashMatchEnabled = true, // 最初からハッシュ比較をONにして重複を探す
                 hashMatchThreshold = 10, // デフォルト閾値10
                 saturationTolerance = 0f,
@@ -472,13 +475,28 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         applyDisplayList()
     }
 
+    /**
+     * 「下層📁:OFF / 下層📁:ON」ボタンの切り替え。
+     * OFF ➔ ON: 下層フォルダ（サブフォルダ）も含めた全画像を再読込し、重複・ハッシュ計算を全体で実行
+     * ON ➔ OFF: 現在のフォルダ直下の画像のみに絞り直して再読込
+     */
+    fun toggleIncludeSubFolders() {
+        val newInclude = !_uiState.value.includeSubFolders
+        _uiState.update { it.copy(includeSubFolders = newInclude) }
+        // 下層を含めるかどうかが切り替わったため、現在のフォルダを即座に再読込
+        reloadCurrentFolder()
+    }
+
     /** 拡張選択を解除し、通常の一覧表示に戻す。基準画像(origin)の位置まで一覧をスクロールさせる。 */
     private fun disableExtensionSelection() {
         val originId = _uiState.value.originImageId
+        val hadSubFolders = _uiState.value.includeSubFolders
+
         _uiState.update {
             it.copy(
                 extensionSelectionActive = false,
                 originImageId = null,
+                includeSubFolders = false, // 拡張選択終了時は直下のみ（OFF）に戻す
                 hashMatchEnabled = false,
                 saturationTolerance = 0f,
                 brightnessTolerance = 0f,
@@ -489,7 +507,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 hashProgressText = null
             )
         }
-        applyDisplayList()
+
+        // もし下層を含めた全件読み込み状態だった場合は、直下のみの一覧へ再読込する
+        if (hadSubFolders) {
+            reloadCurrentFolder()
+        } else {
+            applyDisplayList()
+        }
+
         if (originId != null) {
             val restoredIndex = _uiState.value.entries.indexOfFirst { it.id == originId }
             if (restoredIndex >= 0) requestScroll(restoredIndex)
@@ -583,9 +608,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         applyDisplayList()
     }
 
-    /** ハッシュ値の許容閾値スライダー(1〜20)。操作中に毎フレーム再計算が走らないようデバウンスする。 */
+    /** ハッシュ値の許容閾値スライダー(1〜17)。操作中に毎フレーム再計算が走らないようデバウンスする。 */
     fun setHashMatchThreshold(value: Int) {
-        val clamped = value.coerceIn(1, 20)
+        val clamped = value.coerceIn(1, 17)
         _uiState.update { it.copy(hashMatchThreshold = clamped) }
         debounceApply()
     }

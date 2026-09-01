@@ -203,6 +203,9 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     onBrightnessChange = { viewModel.setBrightnessTolerance(it) },
                     colorPresetStep = state.colorPresetStep,
                     onCyclePreset = { viewModel.cyclePresetStep() },
+                    // 下層フォルダ読み込み状態とトグル操作
+                    includeSubFolders = state.includeSubFolders,
+                    onToggleIncludeSubFolders = { viewModel.toggleIncludeSubFolders() },
                     hashMatchEnabled = state.hashMatchEnabled,
                     onToggleHashMatch = { viewModel.toggleHashMatch(it) },
                     hashMatchThreshold = state.hashMatchThreshold,

@@ -35,9 +35,28 @@ class ImageRepository(private val context: Context) {
      * タイムスタンプ新しい順(DATE_MODIFIED DESC)でクエリし、STREAM_BATCH_SIZE件ずつ
      * Flowで発行する。呼び出し側は最初の発行分だけですぐに一覧を表示できる。
      */
-    fun loadDefaultFolderStreaming(): Flow<LoadProgress> {
-        val relativePath = "${Environment.DIRECTORY_DOWNLOADS}/未整理%"
-        return queryImagesStreaming(relativePathLike = relativePath)
+    /**
+     * 起動時のデフォルト表示用: 端末の「Download/未整理」フォルダ配下の画像を MediaStore 経由で読み込む。
+     *
+     * 【下層フォルダ制御】
+     * ・includeSubFolders = false（デフォルト）: 現在いる「Download/未整理」直下の画像のみ高速クエリ
+     * ・includeSubFolders = true: 未整理配下のすべてのサブフォルダも含めて一括クエリ
+     */
+    fun loadDefaultFolderStreaming(includeSubFolders: Boolean = false): Flow<LoadProgress> {
+        val basePath = "${Environment.DIRECTORY_DOWNLOADS}/未整理"
+        return if (includeSubFolders) {
+            // 下層フォルダを含める（前方一致 LIKE）
+            queryImagesStreaming(
+                selection = "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
+                selectionArgs = arrayOf("$basePath/%")
+            )
+        } else {
+            // 直下の画像のみクエリ（末尾スラッシュ有無の両方に完全一致）
+            queryImagesStreaming(
+                selection = "(${MediaStore.Images.Media.RELATIVE_PATH} = ? OR ${MediaStore.Images.Media.RELATIVE_PATH} = ?)",
+                selectionArgs = arrayOf("$basePath/", basePath)
+            )
+        }
     }
 
     /**
@@ -47,19 +66,18 @@ class ImageRepository(private val context: Context) {
      * .isFile / .type / .lastModified() / .length() / .name を呼ぶたびに個別に
      * ContentResolver.query() が発生する(いわゆる N+1 問題)。数千枚規模のフォルダでは
      * これがファイル1件につき6〜7回のIPC通信となり、致命的に遅くなる
-     * (グループ0件・プリセット無反応に見えていたのもこれが根本原因: 一覧がそもそも埋まっていなかった)。
-     *
      * そのため DocumentsContract の低レベルAPIを使い、子ドキュメント全件のメタ情報を
      * 1回の ContentResolver.query() でまとめて取得する(MediaStoreクエリと同じ発想)。
+     *
+     * @param includeSubFolders false の場合は直下のみ読み込み、true の場合はサブフォルダも再帰走査して読み込む
      */
-    fun loadFromTreeStreaming(treeUri: Uri): Flow<LoadProgress> = flow {
-        val treeDocumentId = try {
+    fun loadFromTreeStreaming(treeUri: Uri, includeSubFolders: Boolean = false): Flow<LoadProgress> = flow {
+        val rootDocId = try {
             DocumentsContract.getTreeDocumentId(treeUri)
         } catch (e: Exception) {
             emit(LoadProgress(emptyList(), 0))
             return@flow
         }
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocumentId)
 
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -72,24 +90,37 @@ class ImageRepository(private val context: Context) {
         data class RawEntry(val documentId: String, val name: String, val size: Long, val lastModified: Long, val mime: String)
 
         val rawEntries = mutableListOf<RawEntry>()
-        try {
-            resolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                val sizeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
-                val dateCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
-                val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+        // 下層フォルダ探索用のキュー（includeSubFoldersがtrueの時にサブフォルダを追加していく）
+        val folderQueue = java.util.ArrayDeque<String>()
+        folderQueue.add(rootDocId)
 
-                while (cursor.moveToNext()) {
-                    val mime = cursor.getString(mimeCol) ?: ""
-                    if (IMAGE_MIME_PREFIXES.any { mime.startsWith(it) }) {
-                        rawEntries += RawEntry(
-                            documentId = cursor.getString(idCol),
-                            name = cursor.getString(nameCol) ?: "unknown",
-                            size = cursor.getLong(sizeCol),
-                            lastModified = cursor.getLong(dateCol),
-                            mime = mime
-                        )
+        try {
+            while (!folderQueue.isEmpty()) {
+                val currentDocId = folderQueue.poll() ?: break
+                val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, currentDocId)
+
+                resolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                    val idCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val nameCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    val sizeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
+                    val dateCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                    val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+
+                    while (cursor.moveToNext()) {
+                        val docId = cursor.getString(idCol)
+                        val mime = cursor.getString(mimeCol) ?: ""
+                        if (IMAGE_MIME_PREFIXES.any { mime.startsWith(it) }) {
+                            rawEntries += RawEntry(
+                                documentId = docId,
+                                name = cursor.getString(nameCol) ?: "unknown",
+                                size = cursor.getLong(sizeCol),
+                                lastModified = cursor.getLong(dateCol),
+                                mime = mime
+                            )
+                        } else if (includeSubFolders && mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            // 下層フォルダを含める場合、サブフォルダを探索キューに追加
+                            folderQueue.add(docId)
+                        }
                     }
                 }
             }
@@ -126,7 +157,7 @@ class ImageRepository(private val context: Context) {
         if (sorted.isEmpty()) emit(LoadProgress(emptyList(), 0))
     }.flowOn(Dispatchers.IO)
 
-    private fun queryImagesStreaming(relativePathLike: String): Flow<LoadProgress> = flow {
+    private fun queryImagesStreaming(selection: String, selectionArgs: Array<String>): Flow<LoadProgress> = flow {
         val projection = arrayOf(
             MediaStore.Images.Media._ID,
             MediaStore.Images.Media.DISPLAY_NAME,
@@ -137,8 +168,6 @@ class ImageRepository(private val context: Context) {
             MediaStore.Images.Media.WIDTH,
             MediaStore.Images.Media.HEIGHT,
         )
-        val selection = "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
-        val selectionArgs = arrayOf(relativePathLike)
         val sortOrder = "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
 
         val accumulated = mutableListOf<ImageItem>()

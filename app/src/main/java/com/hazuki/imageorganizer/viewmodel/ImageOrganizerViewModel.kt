@@ -140,13 +140,44 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     // 読み込み
     // ------------------------------------------------------------------
 
+    // =================================================================
+    // 【フォルダ階層ナビゲーション履歴管理】
+    // 下層フォルダへ移動した際、親フォルダへ「..⤴」ボタンで戻れるようにスタック（履歴）を管理します。
+    // =================================================================
+
+    /** 親フォルダへの戻りナビゲーション用データクラス（URIと表示ラベルを保持） */
+    private data class NavFolderHistory(
+        val uri: Uri?,
+        val label: String
+    )
+
+    /** フォルダ階層の戻り履歴スタック（下層に潜るたびに現在の親フォルダ情報を退避） */
+    private val folderBackStack = mutableListOf<NavFolderHistory>()
+
+    /** 現在のフォルダを戻り履歴スタックに記録し、戻るボタンを有効化 */
+    private fun pushCurrentFolderToBackStack() {
+        val currentLabel = _uiState.value.currentFolderLabel
+        folderBackStack.add(NavFolderHistory(currentFolderUri, currentLabel))
+        _uiState.update { it.copy(canNavigateUp = true) }
+    }
+
+    /** 戻り履歴スタックを初期化（起点となる新しいフォルダをユーザーが開いた際などにリセット） */
+    private fun clearFolderBackStack() {
+        folderBackStack.clear()
+        _uiState.update { it.copy(canNavigateUp = false) }
+    }
+
     /**
      * @param scrollTarget 読込完了後に一覧をスクロールさせる位置。
      *   フォルダを新しく開く操作(起動時の自動復元・フォルダ選択・履歴選択)では既定値の0(先頭)のままでよい。
      *   移動/削除/リネーム後の再読込(reloadCurrentFolder経由)では、実行前の表示位置を渡すことで
      *   一覧の見ていた位置をなるべく維持する。
+     * @param clearBackStack 起点フォルダとして開く場合はtrue（履歴スタックを初期化）
      */
-    fun loadDocumentsFolder(scrollTarget: Int = 0) {
+    fun loadDocumentsFolder(scrollTarget: Int = 0, clearBackStack: Boolean = true) {
+        if (clearBackStack) {
+            clearFolderBackStack()
+        }
         currentFolderUri = null
         currentZipDir = null
         _uiState.update {
@@ -172,7 +203,16 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    fun openFolder(treeUri: Uri, label: String, recordHistory: Boolean = true, scrollTarget: Int = 0) {
+    fun openFolder(
+        treeUri: Uri,
+        label: String,
+        recordHistory: Boolean = true,
+        scrollTarget: Int = 0,
+        clearBackStack: Boolean = true
+    ) {
+        if (clearBackStack) {
+            clearFolderBackStack()
+        }
         currentFolderUri = treeUri
         currentZipDir = null
         val includeSubFolders = _uiState.value.includeSubFolders
@@ -210,6 +250,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     /** ZIP書庫を選択した際の読込。アプリキャッシュへ展開してから通常フォルダと同様に扱う。 */
     fun openZipFile(zipUri: Uri, label: String, recordHistory: Boolean = true, scrollTarget: Int = 0) {
+        clearFolderBackStack()
         currentFolderUri = null
         _uiState.update {
             it.copy(
@@ -266,8 +307,8 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                         .collect { progress -> onBatchReceived(progress) }
                 }
             }
-            uri != null -> openFolder(uri, _uiState.value.currentFolderLabel, recordHistory = false, scrollTarget = scrollTarget)
-            else -> loadDocumentsFolder(scrollTarget = scrollTarget)
+            uri != null -> openFolder(uri, _uiState.value.currentFolderLabel, recordHistory = false, scrollTarget = scrollTarget, clearBackStack = false)
+            else -> loadDocumentsFolder(scrollTarget = scrollTarget, clearBackStack = false)
         }
     }
 
@@ -1518,8 +1559,12 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     /**
      * 【ラベルリスト読み込み】
      * アセットフォルダの「labels.txt」から、AI認識カテゴリーリストを読み込みます。
-     * 形式: "0 01犬\n1 02猫\n..." のように「番号 ラベル名」の形で、各行が改行で分割されます。
-     * ラベル名だけを抽出して返します（例: ["01犬", "02猫", ...]）
+     * 
+     * labels.txt の各行の形式例:
+     * - "0 01_水着_anime" ➔ 先頭の「0 」は分類用ID、後ろの「01_水着_anime」が本来のラベル名
+     * - "01_水着_anime"   ➔ IDがなく直接ラベル名のみが書かれている場合
+     * 
+     * 先頭のID番号（0, 1, 2...）は切り離し、本来のラベル名のみを抽出して返します。
      */
     private fun loadLabels(): List<String> {
         return try {
@@ -1527,28 +1572,31 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             val inputStream = context.assets.open("labels.txt")
             val content = inputStream.bufferedReader().use { it.readText() }
             content.split("\n")
+                .map { it.trim() }
                 .filter { it.isNotBlank() }
                 .mapNotNull { line ->
-                    // =====================================
-                    // 形式変換：「1 犬」→「01 犬」に正規化
-                    // ラベル番号を2文字0埋めで統一
-                    // =====================================
-                    val parts = line.trim().split(Regex("\\s+"), limit = 2)
+                    // =========================================================
+                    // 空白文字（半角スペースやタブ）で最大2つに分割
+                    // 例: "0 01_水着_anime" ➔ parts[0]="0", parts[1]="01_水着_anime"
+                    // =========================================================
+                    val parts = line.split(Regex("\\s+"), limit = 2)
                     if (parts.size >= 2) {
-                        // 最初の部分（番号）を数値に変換
-                        val numberPart = parts[0].toIntOrNull()
-                        if (numberPart != null) {
-                            // 番号を2文字に正規化（0埋め）し、スペースを入れずに結合（例：1 犬 → "01犬"）
-                            "%02d%s".format(numberPart, parts[1])
+                        // 最初の部分が数値（インデックス番号: 0, 1, 2...）かどうか判定
+                        val isIndexNumber = parts[0].toIntOrNull() != null
+                        if (isIndexNumber) {
+                            // 先頭がインデックス番号なら、後ろの「本来のラベル名」のみを取り出す
+                            parts[1].trim()
                         } else {
-                            null
+                            // 先頭が数値でない場合は、行全体をそのままラベル名として採用
+                            line
                         }
                     } else {
-                        null
+                        // スペースで区切られていない行は、行全体をそのままラベル名として採用
+                        line
                     }
                 }
         } catch (e: Exception) {
-            // ファイルが見つからない場合は空リスト
+            // ファイルが見つからない、または読み込み失敗時は空リスト
             emptyList()
         }
     }
@@ -1609,7 +1657,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                         val subDocId = DocumentsContract.getDocumentId(subFolderUri)
                         val subTreeUri = DocumentsContract.buildTreeDocumentUri(treeUri.authority, subDocId)
                         withContext(Dispatchers.Main) {
-                            openFolder(subTreeUri, label)
+                            // 【親フォルダ履歴退避】移動する前に、現在の親フォルダ情報をスタックに積む
+                            pushCurrentFolderToBackStack()
+                            // サブフォルダを開く（スタックはクリアしない）
+                            openFolder(subTreeUri, label, clearBackStack = false)
                         }
                     } else {
                         // 直下に該当フォルダがない場合は、移動せずに案内を表示
@@ -1628,6 +1679,34 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             _uiState.update {
                 it.copy(snackbarMessage = "直下に「$label」フォルダはありません (長押しでラベル変更)")
             }
+        }
+    }
+
+    /**
+     * 【一階層上の親フォルダに戻る（「..⤴」ボタン押下時）】
+     * ラベル選択プルダウンの最上部に追加された「..⤴」ボタンをタップした時に呼び出されます。
+     * スタックに退避されている直前の親フォルダ情報を取り出して移動します。
+     * 起点フォルダまで戻りスタックが空になったら、自動的に「..⤴」ボタンはグレーアウト（無効）になります。
+     */
+    fun navigateUpFolder() {
+        if (folderBackStack.isEmpty()) return
+
+        // スタックの末尾（直前の親フォルダ）を取り出す
+        val parent = folderBackStack.removeAt(folderBackStack.lastIndex)
+
+        // まだ戻れる階層があるかどうかでボタンの活性状態（グレーアウト）を更新
+        _uiState.update { it.copy(canNavigateUp = folderBackStack.isNotEmpty()) }
+
+        // 取り出した親フォルダへ移動（スタックはクリアしない）
+        if (parent.uri != null) {
+            openFolder(
+                treeUri = parent.uri,
+                label = parent.label,
+                recordHistory = false,
+                clearBackStack = false
+            )
+        } else {
+            loadDocumentsFolder(clearBackStack = false)
         }
     }
 
@@ -1864,6 +1943,15 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                             } else {
                                 "${sanitizedLabel}_${groupCode}_${imageCode}"
                             }
+
+                            // 既に目的の名前と同じなら、OSにリネーム命令を出さない（OSの(1)付与誤作動を防止）
+                            if (item.displayName == newName) {
+                                renamedItems.add(item to item.displayName)
+                                expectedNewNames.add(newName)
+                                successCount++
+                                continue
+                            }
+
                             try {
                                 android.provider.DocumentsContract.renameDocument(resolver, item.uri, newName)
                                 renamedItems.add(item to item.displayName)
@@ -1942,8 +2030,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
-     * 【フォルダ内の一括ラベル変更】
-     * 現在開いているフォルダ内の対象ファイル名の「旧ラベル」部分を「新ラベル」に一括置換します。
+     * 【フォルダ内の一括ラベル変更 ＆ フォルダ自体のリネーム】
+     * 現在開いているフォルダ内の対象連番ファイル名の「ラベル」部分を「新ラベル」に一括置換し、
+     * さらに下層フォルダを開いている場合はフォルダ自体の名前も新ラベル名に安全にリネームします。
      */
     fun executeRenameGroupLabel(newLabel: String) {
         val rawLabel = newLabel.ifBlank { "未分類" }
@@ -1955,17 +2044,20 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 var successCount = 0
+                var folderRenamed = false
+                var newTreeUri: android.net.Uri? = null
 
                 when {
-                    // ---- ① SAFフォルダの場合 ----
+                    // ---- ① SAFフォルダ（端末本体やSDカードのフォルダ）の場合 ----
                     treeUri != null -> {
                         val resolver = getApplication<android.app.Application>().contentResolver
-                        // 全ファイルの中から、RenameMoveHelperの形式に一致するものを抽出
+                        // 全ファイルの中から、RenameMoveHelperの形式（ラベル_XX_XX.拡張子）に一致するものを抽出
                         val parseTargets = allImages.mapNotNull { item ->
                             val parsed = com.hazuki.imageorganizer.data.RenameMoveHelper.parseSeqName(item.displayName)
                             if (parsed != null) Pair(item, parsed) else null
                         }
 
+                        // 1. 各対象ファイルのラベル名を一括リネーム
                         for ((item, parsed) in parseTargets) {
                             try {
                                 val groupCode = com.hazuki.imageorganizer.data.RenameMoveHelper.toSeqCode(parsed.groupIndex)
@@ -1976,20 +2068,68 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                                 } else {
                                     "${sanitizedNewLabel}_${groupCode}_${imageCode}"
                                 }
+
+                                // 既に目的の名前と同じなら、OSにリネーム命令を出さない（OSの(1)付与誤作動を完全に防止）
+                                if (item.displayName == newName) {
+                                    successCount++
+                                    continue
+                                }
+
                                 android.provider.DocumentsContract.renameDocument(resolver, item.uri, newName)
                                 successCount++
                             } catch (e: Exception) {
-                                // 個別の失敗はスキップ
+                                // 個別のファイルリネーム失敗はスキップして継続
                             }
+                        }
+
+                        // 2. フォルダそのものの名前変更（安全ガード付き）
+                        try {
+                            val treeDocId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                            val colonIndex = treeDocId.indexOf(':')
+                            val relativePath = if (colonIndex >= 0) treeDocId.substring(colonIndex + 1) else ""
+                            
+                            // 起点・標準システムフォルダ（ルートやDownload/DCIM直下など）は誤変更を防ぐため除外
+                            val isSystemOrRoot = relativePath.isBlank() ||
+                                relativePath.equals("Download", ignoreCase = true) ||
+                                relativePath.equals("DCIM", ignoreCase = true) ||
+                                relativePath.equals("Pictures", ignoreCase = true) ||
+                                relativePath.equals("Documents", ignoreCase = true)
+
+                            // システムルート以外のフォルダ（サブフォルダ等）の場合にフォルダ自体をリネーム
+                            if (!isSystemOrRoot) {
+                                val folderDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+                                val renamedDocUri = android.provider.DocumentsContract.renameDocument(resolver, folderDocUri, sanitizedNewLabel)
+                                if (renamedDocUri != null) {
+                                    val newDocId = android.provider.DocumentsContract.getDocumentId(renamedDocUri)
+                                    newTreeUri = android.provider.DocumentsContract.buildTreeDocumentUri(treeUri.authority, newDocId)
+                                    folderRenamed = true
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // フォルダ名のリネームに非対応のプロバイダ等の場合は安全のため例外をキャッチして継続
                         }
                     }
 
-                    // ---- ② ローカルフォルダの場合 ----
+                    // ---- ② ローカルフォルダ（ZIP展開時など）の場合 ----
                     zipDir != null -> {
                         val oldLabel = _uiState.value.currentSelectedLabel.replace(" ", "")
                         val result = com.hazuki.imageorganizer.data.RenameMoveHelper.renameGroupLabel(zipDir, oldLabel, sanitizedNewLabel)
                         if (result is com.hazuki.imageorganizer.data.RenameMoveHelper.Result.Success) {
                             successCount = result.count
+                        }
+
+                        // ローカルフォルダ自体の名前変更
+                        try {
+                            val parent = zipDir.parentFile
+                            if (parent != null) {
+                                val newDir = java.io.File(parent, sanitizedNewLabel)
+                                if (zipDir.renameTo(newDir)) {
+                                    currentZipDir = newDir
+                                    folderRenamed = true
+                                }
+                            }
+                        } catch (e: Exception) {
+                            // 失敗時はスキップして継続
                         }
                     }
 
@@ -1999,8 +2139,35 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                     }
                 }
 
-                _uiState.update { it.copy(snackbarMessage = "${successCount}件のラベル名を「$sanitizedNewLabel」に一括変更しました") }
-                reloadCurrentFolder(0)
+                // 実行結果メッセージの組み立て
+                val resultMessage = if (folderRenamed) {
+                    "${successCount}件のファイルとフォルダ名を「$sanitizedNewLabel」に変更しました"
+                } else {
+                    "${successCount}件のラベル名を「$sanitizedNewLabel」に一括変更しました"
+                }
+
+                // UIスレッドで選択状態の解除とフォルダの同期更新を行う
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    clearSelection()
+                    _uiState.update { it.copy(snackbarMessage = resultMessage) }
+
+                    if (folderRenamed && newTreeUri != null) {
+                        // フォルダ名が変わった場合：新しいツリーURIで開き直し、表示と内部状態を完全に同期（戻る履歴は維持）
+                        openFolder(
+                            treeUri = newTreeUri,
+                            label = sanitizedNewLabel,
+                            recordHistory = true,
+                            clearBackStack = false
+                        )
+                    } else if (folderRenamed && zipDir != null) {
+                        // ZIPモードでローカルフォルダ名が変わった場合
+                        _uiState.update { it.copy(currentFolderLabel = sanitizedNewLabel) }
+                        reloadCurrentFolder(0)
+                    } else {
+                        // フォルダ自体のリネームが行われなかった場合（ファイルのみ変更）
+                        reloadCurrentFolder(0)
+                    }
+                }
 
             } catch (e: Exception) {
                 _uiState.update { it.copy(snackbarMessage = "一括変更中にエラーが発生しました: ${e.localizedMessage}") }

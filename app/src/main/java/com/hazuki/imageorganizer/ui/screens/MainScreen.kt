@@ -250,6 +250,12 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     onLabelSubFolderNavigate = { targetLabel ->
                         viewModel.navigateToSubFolderIfExists(targetLabel)
                     },
+                    // ---- フォルダ階層移動（親フォルダへ戻る「..⤴」機能） ----
+                    canNavigateUp = state.canNavigateUp,
+                    onNavigateUp = {
+                        // ラベル選択プルダウンの「..⤴」ボタンタップ時、直前の親フォルダへ戻る
+                        viewModel.navigateUpFolder()
+                    },
                     // ---- 選択モード・リネーム機能 ----
                     selectedCount = state.selectedCount,
                     currentLabel = state.currentSelectedLabel,

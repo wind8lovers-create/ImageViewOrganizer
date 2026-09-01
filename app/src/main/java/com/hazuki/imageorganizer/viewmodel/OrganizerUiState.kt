@@ -117,5 +117,9 @@ data class OrganizerUiState(
     val labels: List<String> = emptyList(), // AI認識カテゴリーリスト（約23個）
     val selectedCount: Int = 0, // 現在選択中のファイル枚数
     val currentSelectedLabel: String = "", // 現在選択中のラベル
-    val isSelectionMode: Boolean = false // 選択モード中かどうか
+    val isSelectionMode: Boolean = false, // 選択モード中かどうか
+
+    // ---- フォルダ階層移動（親フォルダへ戻る「..⤴」機能） ----
+    val canNavigateUp: Boolean = false // 上の階層に戻れるかどうか（下層フォルダに潜っている場合のみ true）
 )
+

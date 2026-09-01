@@ -58,8 +58,9 @@ object RenameMoveHelper {
      * 合致しない場合は null を返します。
      */
     fun parseRenamedFileInfo(displayName: String): RenamedFileInfo? {
-        // パターン: [ラベル名]_[グループ2文字]_[画像連番2文字].[拡張子]
-        val pattern = Regex("^(.+)_([0-9A-Z]{2})_([0-9A-Z]{2})\\.[^.]+$")
+        // パターン: [ラベル名]_[グループ2文字]_[画像番号2文字].[拡張子]
+        // ※OSの重複回避で末尾に付く「(1)」や「（１）」などの半角・全角枝番も安全に吸収して認識します
+        val pattern = Regex("^(.+)_([0-9A-Z]{2})_([0-9A-Z]{2})(?:[\\s　]*[\\(（][\\d０-９]+[\\)）])?\\.[^.]+$")
         val match = pattern.matchEntire(displayName) ?: return null
         val label = match.groupValues[1]
         val groupCode = match.groupValues[2]
@@ -130,7 +131,8 @@ object RenameMoveHelper {
      */
     fun findNextGroupIndexFromNames(existingNames: Collection<String>, sanitizedLabel: String): Int {
         // パターン: [ラベル名]_[グループ2文字]_[画像番号2文字].[拡張子]
-        val pattern = Regex("^${Regex.escape(sanitizedLabel)}_([0-9A-Z]{2})_([0-9A-Z]{2})\\..+$")
+        // ※「(1)」や「（１）」などの半角・全角枝番が付いていても元のグループ番号として計算に含めます
+        val pattern = Regex("^${Regex.escape(sanitizedLabel)}_([0-9A-Z]{2})_([0-9A-Z]{2})(?:[\\s　]*[\\(（][\\d０-９]+[\\)）])?\\..+$")
         var maxIndex = 0 // 既存が無ければ 0 ➔ 次は 1（"01"）
 
         for (name in existingNames) {
@@ -324,7 +326,8 @@ object RenameMoveHelper {
     /** 連番ファイル名の解析結果 */
     data class ParsedSeqName(val label: String, val groupIndex: Int, val imageIndex: Int)
 
-    private val seqNamePattern = Regex("^(.+)_([0-9A-Z]{2})_([0-9A-Z]{2})\\.[^.]+$")
+    // 連番ファイル名の正規表現パターン（半角・全角の「(1)」「（１）」等が付いていても安全に吸収）
+    private val seqNamePattern = Regex("^(.+)_([0-9A-Z]{2})_([0-9A-Z]{2})(?:[\\s　]*[\\(（][\\d０-９]+[\\)）])?\\.[^.]+$")
 
     /**
      * 【ファイル名の形式チェック＆分解】

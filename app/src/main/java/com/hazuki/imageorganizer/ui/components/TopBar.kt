@@ -139,6 +139,8 @@ fun OrganizerTopBar(
     onLabelSelectClick: () -> Unit = {},
     onLabelSelected: (String) -> Unit = {},  // ラベル選択ダイアログからの長押し選択結果を受け取るコールバック
     onLabelSubFolderNavigate: (String) -> Unit = {}, // ラベル選択ダイアログからの通常タップ（サブフォルダ移動）を受け取るコールバック
+    canNavigateUp: Boolean = false, // 上の階層へ戻れるかどうか（「..⤴」ボタンのグレーアウト判定）
+    onNavigateUp: () -> Unit = {},  // 【「..⤴」タップ時】親フォルダへ戻るコールバック
 
     // ---- 選択モード・リネーム機能 ----
     selectedCount: Int = 0,
@@ -338,7 +340,9 @@ fun OrganizerTopBar(
                         labels = labels,
                         currentLabel = displayLabel,
                         onLabelSelected = onLabelSelected,
-                        onLabelClick = onLabelSubFolderNavigate
+                        onLabelClick = onLabelSubFolderNavigate,
+                        canNavigateUp = canNavigateUp,
+                        onNavigateUp = onNavigateUp
                     )
                 } else {
                     // ラベルが読み込まれていない場合は、ボタンのみ表示（非活性）

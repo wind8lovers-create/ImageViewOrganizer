@@ -46,6 +46,10 @@ fun LabelSelectDialog(
     onLabelSelected: (String) -> Unit,       // 【長押し時】ラベル変更コールバック
     onLabelClick: (String) -> Unit = {},     // 【通常タップ時】サブフォルダ移動コールバック
     
+    // ---- フォルダ階層移動（親フォルダへ戻る機能） ----
+    canNavigateUp: Boolean = false,          // 上の階層へ戻れるかどうか（下層フォルダにいる時のみtrue）
+    onNavigateUp: () -> Unit = {},           // 【「..⤴」タップ時】親フォルダへ戻るコールバック
+    
     modifier: Modifier = Modifier
 ) {
     // =====================================
@@ -80,23 +84,42 @@ fun LabelSelectDialog(
             expanded = showMenu,
             onDismissRequest = { showMenu = false }  // メニュー外をタップで閉じる
         ) {
-            // 操作ヒント表示（上下2行）
-            androidx.compose.foundation.layout.Column(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+            // =================================================================
+            // 【最上部】「..⤴」一階層上の親フォルダに戻るボタン
+            // ・起動直後（起点フォルダ）：グレーアウト（薄い文字・タップ無効）
+            // ・ラベル選択で下層へ潜った時：通常表示（ハッキリとした文字・タップ可能）
+            // =================================================================
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // canNavigateUp が true の時だけタップ可能にして親フォルダへ戻る
+                    .then(
+                        if (canNavigateUp) {
+                            Modifier.clickable {
+                                showMenu = false
+                                onNavigateUp()
+                            }
+                        } else {
+                            Modifier // 無効時は clickable を付与せずタップを受け付けない
+                        }
+                    )
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "💡 タップ→フォルダへ",
-                    fontSize = 11.sp,
-                    color = FujiPrimaryDark.copy(alpha = 0.75f),
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = "　 長押し: ラベル変更",
-                    fontSize = 11.sp,
-                    color = FujiPrimaryDark.copy(alpha = 0.75f),
-                    fontWeight = FontWeight.Medium
+                    text = "..⤴",
+                    fontSize = 15.sp,
+                    // 有効時はハッキリとした色、グレーアウト時は薄いグレー
+                    color = if (canNavigateUp) FujiPrimaryDark else Color.Gray.copy(alpha = 0.4f),
+                    fontWeight = FontWeight.Bold
                 )
             }
+
+            // 親フォルダ戻るボタンとラベル一覧を区別する薄い仕切り線
+            androidx.compose.material3.HorizontalDivider(
+                color = Color.Gray.copy(alpha = 0.2f),
+                thickness = 0.5.dp
+            )
 
             // =====================================
             // 【ラベルリスト】約23種類を縦リスト表示

@@ -63,6 +63,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     // 現在開いているフォルダのソース(再読込時にどちらを呼び直すか判定するため)
     private var currentFolderUri: Uri? = null
+    // ユーザーが選択した起点フォルダのTree URI（永続パーミッションを保持するマスターキー）
+    private var rootTreeUri: Uri? = null
+    // 現在閲覧中のフォルダのDocument ID（サブフォルダに潜っている場合はそのID、ルート時はnull）
+    private var currentFolderDocId: String? = null
     private var currentZipDir: java.io.File? = null
 
     /**
@@ -145,10 +149,11 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     // 下層フォルダへ移動した際、親フォルダへ「..⤴」ボタンで戻れるようにスタック（履歴）を管理します。
     // =================================================================
 
-    /** 親フォルダへの戻りナビゲーション用データクラス（URIと表示ラベルを保持） */
+    /** 親フォルダへの戻りナビゲーション用データクラス（URI、表示ラベル、DocIdを保持） */
     private data class NavFolderHistory(
         val uri: Uri?,
-        val label: String
+        val label: String,
+        val docId: String? = null
     )
 
     /** フォルダ階層の戻り履歴スタック（下層に潜るたびに現在の親フォルダ情報を退避） */
@@ -157,7 +162,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     /** 現在のフォルダを戻り履歴スタックに記録し、戻るボタンを有効化 */
     private fun pushCurrentFolderToBackStack() {
         val currentLabel = _uiState.value.currentFolderLabel
-        folderBackStack.add(NavFolderHistory(currentFolderUri, currentLabel))
+        folderBackStack.add(NavFolderHistory(currentFolderUri, currentLabel, currentFolderDocId))
         _uiState.update { it.copy(canNavigateUp = true) }
     }
 
@@ -208,10 +213,19 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         label: String,
         recordHistory: Boolean = true,
         scrollTarget: Int = 0,
-        clearBackStack: Boolean = true
+        clearBackStack: Boolean = true,
+        targetDocId: String? = null
     ) {
         if (clearBackStack) {
             clearFolderBackStack()
+            // 起点フォルダの権限（マスターキー）として保持
+            rootTreeUri = treeUri
+            currentFolderDocId = null
+        } else {
+            if (rootTreeUri == null) {
+                rootTreeUri = treeUri
+            }
+            currentFolderDocId = targetDocId
         }
         currentFolderUri = treeUri
         currentZipDir = null
@@ -222,7 +236,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 isStreaming = true,
                 currentFolderLabel = label,
                 isZipMode = false,
-                folderDetailLabel = buildReadableFullPath(treeUri),
+                folderDetailLabel = buildReadableFullPath(treeUri, currentFolderDocId),
                 folderTotalCount = 0
             )
         }
@@ -233,7 +247,13 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
         viewModelScope.launch {
             try {
-                repository.loadFromTreeStreaming(treeUri, includeSubFolders = includeSubFolders)
+                // マスターキー(rootTreeUri)の権限傘下として対象フォルダ(currentFolderDocId)を読み込む
+                val baseTree = rootTreeUri ?: treeUri
+                repository.loadFromTreeStreaming(
+                    treeUri = baseTree,
+                    includeSubFolders = includeSubFolders,
+                    folderDocId = currentFolderDocId
+                )
                     .onCompletion {
                         _uiState.update { s -> s.copy(isStreaming = false) }
                         applyDisplayList()
@@ -307,7 +327,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                         .collect { progress -> onBatchReceived(progress) }
                 }
             }
-            uri != null -> openFolder(uri, _uiState.value.currentFolderLabel, recordHistory = false, scrollTarget = scrollTarget, clearBackStack = false)
+            uri != null -> openFolder(
+                treeUri = uri,
+                label = _uiState.value.currentFolderLabel,
+                recordHistory = false,
+                scrollTarget = scrollTarget,
+                clearBackStack = false,
+                targetDocId = currentFolderDocId
+            )
             else -> loadDocumentsFolder(scrollTarget = scrollTarget, clearBackStack = false)
         }
     }
@@ -323,9 +350,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      * これを "内部ストレージ/DCIM/Camera" のような表示用の文字列に変換する。
      * (取得に失敗した場合は、フォルダ名だけでも表示できるようフォールバックする)
      */
-    private fun buildReadableFullPath(treeUri: Uri): String {
+    private fun buildReadableFullPath(treeUri: Uri, docIdOverride: String? = null): String {
         return try {
-            val docId = DocumentsContract.getTreeDocumentId(treeUri)
+            val docId = docIdOverride ?: DocumentsContract.getTreeDocumentId(treeUri)
             val colonIndex = docId.indexOf(':')
             if (colonIndex < 0) return docId
             val volume = docId.substring(0, colonIndex)
@@ -1643,24 +1670,29 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             viewModelScope.launch(Dispatchers.IO) {
                 try {
                     val resolver = getApplication<Application>().contentResolver
-                    val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
-                    val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+                    val baseTree = rootTreeUri ?: treeUri
+                    val currentDocId = currentFolderDocId ?: DocumentsContract.getTreeDocumentId(baseTree)
+                    val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(baseTree, currentDocId)
 
                     // 元のラベル名、空白全除去後の名前、またはsanitize後の名前で直下のサブフォルダを検索
                     val noSpaceLabel = label.replace(" ", "")
-                    val subFolderUri = fileOps.findSubFolderUriSaf(resolver, treeUri, parentDocUri, label)
-                        ?: fileOps.findSubFolderUriSaf(resolver, treeUri, parentDocUri, noSpaceLabel)
-                        ?: fileOps.findSubFolderUriSaf(resolver, treeUri, parentDocUri, sanitized)
+                    val subFolderUri = fileOps.findSubFolderUriSaf(resolver, baseTree, parentDocUri, label)
+                        ?: fileOps.findSubFolderUriSaf(resolver, baseTree, parentDocUri, noSpaceLabel)
+                        ?: fileOps.findSubFolderUriSaf(resolver, baseTree, parentDocUri, sanitized)
 
                     if (subFolderUri != null) {
-                        // 見つかったサブフォルダのツリーURIを生成し、メインスレッドでフォルダを開く
+                        // 見つかったサブフォルダのDocIdを取得し、マスターキー(baseTree)の権限傘下のまま開く
                         val subDocId = DocumentsContract.getDocumentId(subFolderUri)
-                        val subTreeUri = DocumentsContract.buildTreeDocumentUri(treeUri.authority, subDocId)
                         withContext(Dispatchers.Main) {
                             // 【親フォルダ履歴退避】移動する前に、現在の親フォルダ情報をスタックに積む
                             pushCurrentFolderToBackStack()
-                            // サブフォルダを開く（スタックはクリアしない）
-                            openFolder(subTreeUri, label, clearBackStack = false)
+                            // マスターキー(baseTree)を維持し、サブフォルダのDocIdを指定して開く（権限エラーを完全防止）
+                            openFolder(
+                                treeUri = baseTree,
+                                label = label,
+                                clearBackStack = false,
+                                targetDocId = subDocId
+                            )
                         }
                     } else {
                         // 直下に該当フォルダがない場合は、移動せずに案内を表示
@@ -1697,13 +1729,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         // まだ戻れる階層があるかどうかでボタンの活性状態（グレーアウト）を更新
         _uiState.update { it.copy(canNavigateUp = folderBackStack.isNotEmpty()) }
 
-        // 取り出した親フォルダへ移動（スタックはクリアしない）
+        // 取り出した親フォルダへ移動（スタックはクリアしない、親のDocIdを指定して復帰）
         if (parent.uri != null) {
             openFolder(
                 treeUri = parent.uri,
                 label = parent.label,
                 recordHistory = false,
-                clearBackStack = false
+                clearBackStack = false,
+                targetDocId = parent.docId
             )
         } else {
             loadDocumentsFolder(clearBackStack = false)
@@ -2084,7 +2117,8 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
                         // 2. フォルダそのものの名前変更（安全ガード付き）
                         try {
-                            val treeDocId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                            val baseTree = rootTreeUri ?: treeUri
+                            val treeDocId = currentFolderDocId ?: android.provider.DocumentsContract.getTreeDocumentId(baseTree)
                             val colonIndex = treeDocId.indexOf(':')
                             val relativePath = if (colonIndex >= 0) treeDocId.substring(colonIndex + 1) else ""
                             
@@ -2097,11 +2131,11 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
                             // システムルート以外のフォルダ（サブフォルダ等）の場合にフォルダ自体をリネーム
                             if (!isSystemOrRoot) {
-                                val folderDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+                                val folderDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(baseTree, treeDocId)
                                 val renamedDocUri = android.provider.DocumentsContract.renameDocument(resolver, folderDocUri, sanitizedNewLabel)
                                 if (renamedDocUri != null) {
                                     val newDocId = android.provider.DocumentsContract.getDocumentId(renamedDocUri)
-                                    newTreeUri = android.provider.DocumentsContract.buildTreeDocumentUri(treeUri.authority, newDocId)
+                                    currentFolderDocId = newDocId
                                     folderRenamed = true
                                 }
                             }
@@ -2151,13 +2185,15 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                     clearSelection()
                     _uiState.update { it.copy(snackbarMessage = resultMessage) }
 
-                    if (folderRenamed && newTreeUri != null) {
-                        // フォルダ名が変わった場合：新しいツリーURIで開き直し、表示と内部状態を完全に同期（戻る履歴は維持）
+                    val baseTree = rootTreeUri ?: treeUri
+                    if (folderRenamed && baseTree != null) {
+                        // フォルダ名が変わった場合：起点マスターキーの権限を維持したまま新DocIdで開き直す（権限エラーゼロ）
                         openFolder(
-                            treeUri = newTreeUri,
+                            treeUri = baseTree,
                             label = sanitizedNewLabel,
                             recordHistory = true,
-                            clearBackStack = false
+                            clearBackStack = false,
+                            targetDocId = currentFolderDocId
                         )
                     } else if (folderRenamed && zipDir != null) {
                         // ZIPモードでローカルフォルダ名が変わった場合

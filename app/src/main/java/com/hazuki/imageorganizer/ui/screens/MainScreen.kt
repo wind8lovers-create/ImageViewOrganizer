@@ -69,10 +69,20 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
+            try {
+                // =========================================================================
+                // 【永続権限の取得】
+                // 読み取り（READ）と書き込み・変更（WRITE）の両方の権限を永続化します。
+                // これにより、アプリを再起動したり、サブフォルダ内のファイルをリネーム・移動したりする際も
+                // 権限確認が再要求されるのを防ぎます。
+                // =========================================================================
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (e: SecurityException) {
+                // 一部のストレージ提供元が永続化に非対応の場合でも、現在のセッションでの操作を継続
+            }
             val label = uri.lastPathSegment?.substringAfterLast('/') ?: "選択したフォルダ"
             viewModel.openFolder(uri, label)
         }

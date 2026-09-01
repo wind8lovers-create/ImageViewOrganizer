@@ -71,8 +71,13 @@ class ImageRepository(private val context: Context) {
      *
      * @param includeSubFolders false の場合は直下のみ読み込み、true の場合はサブフォルダも再帰走査して読み込む
      */
-    fun loadFromTreeStreaming(treeUri: Uri, includeSubFolders: Boolean = false): Flow<LoadProgress> = flow {
-        val rootDocId = try {
+    fun loadFromTreeStreaming(
+        treeUri: Uri,
+        includeSubFolders: Boolean = false,
+        folderDocId: String? = null
+    ): Flow<LoadProgress> = flow {
+        // folderDocIdが指定されている場合はそのサブフォルダから、無ければtreeUriのルートから走査を開始
+        val rootDocId = folderDocId ?: try {
             DocumentsContract.getTreeDocumentId(treeUri)
         } catch (e: Exception) {
             emit(LoadProgress(emptyList(), 0))

@@ -207,12 +207,7 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     extensionSelectionActive = state.extensionSelectionActive,
                     onToggleExtensionSelection = { viewModel.toggleExtensionSelection() },
                     matchedCount = state.matchedCount,
-                    saturationTolerance = state.saturationTolerance,
-                    onSaturationChange = { viewModel.setSaturationTolerance(it) },
-                    brightnessTolerance = state.brightnessTolerance,
-                    onBrightnessChange = { viewModel.setBrightnessTolerance(it) },
-                    colorPresetStep = state.colorPresetStep,
-                    onCyclePreset = { viewModel.cyclePresetStep() },
+                    focusedFileInfo = state.focusedFileInfo,
                     // 下層フォルダ読み込み状態とトグル操作
                     includeSubFolders = state.includeSubFolders,
                     onToggleIncludeSubFolders = { viewModel.toggleIncludeSubFolders() },
@@ -342,6 +337,7 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                                     gridState = gridState,
                                     onTap = { index ->
                                         val id = state.entries.getOrNull(index)?.id
+                                        if (id != null) viewModel.setFocusedImage(id)
                                         if (state.selectionMode) {
                                             if (id != null) viewModel.toggleSelected(id)
                                         } else {
@@ -350,7 +346,10 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                                     },
                                     onLongPress = { index ->
                                         val id = state.entries.getOrNull(index)?.id
-                                        if (id != null) viewModel.handleLongPress(id)
+                                        if (id != null) {
+                                            viewModel.setFocusedImage(id)
+                                            viewModel.handleLongPress(id)
+                                        }
                                     },
                                     // 拡張選択モード中、または「🏷️ グループ連番（枠色別）↓」ソート中は、計算された枠線色(A〜Z)を適用してグループを見分けやすくする
                                     groupedImageIds = if (state.extensionSelectionActive || state.sortOption == com.hazuki.imageorganizer.data.SortOption.GROUP_SEQ_ASC) {

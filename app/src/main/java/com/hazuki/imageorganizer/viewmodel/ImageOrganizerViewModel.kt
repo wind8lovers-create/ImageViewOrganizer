@@ -528,6 +528,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             it.copy(
                 extensionSelectionActive = true,
                 originImageId = origin?.id,
+                focusedImageId = origin?.id, // 拡張選択開始時は基準画像をフォーカス対象に設定
                 includeSubFolders = false, // ★ボタン起動時はデフォルトで「現在いるフォルダ直下のみ（下層📁:OFF）」
                 hashMatchEnabled = true, // 最初からハッシュ比較をONにして重複を探す
                 hashMatchThreshold = 10, // デフォルト閾値10
@@ -742,6 +743,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         _uiState.update { it.copy(
             selectionMode = true,
             selectedIds = setOf(imageId),
+            focusedImageId = imageId, // 直近タップした画像をフォーカス対象にする
             // ---- 新しい選択状態も更新（ラベルは現在の選択を維持する） ----
             isSelectionMode = true,
             selectedCount = 1
@@ -756,11 +758,21 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             state.copy(
                 selectedIds = newSet,
                 selectionMode = stillSelecting,
+                focusedImageId = imageId, // 直近タップした画像をフォーカス対象にする
                 // ---- 新しい選択状態も更新 ----
                 isSelectionMode = stillSelecting,
                 selectedCount = newSet.size
             )
         }
+    }
+
+    /**
+     * 【フォーカス画像の更新】
+     * 拡張選択メニュー上部のファイル情報欄に即座に反映させるため、
+     * 画像タップ時にその画像のIDを記録します。
+     */
+    fun setFocusedImage(imageId: Long) {
+        _uiState.update { it.copy(focusedImageId = imageId) }
     }
 
     /**
@@ -2131,12 +2143,18 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
                             // システムルート以外のフォルダ（サブフォルダ等）の場合にフォルダ自体をリネーム
                             if (!isSystemOrRoot) {
-                                val folderDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(baseTree, treeDocId)
-                                val renamedDocUri = android.provider.DocumentsContract.renameDocument(resolver, folderDocUri, sanitizedNewLabel)
-                                if (renamedDocUri != null) {
-                                    val newDocId = android.provider.DocumentsContract.getDocumentId(renamedDocUri)
-                                    currentFolderDocId = newDocId
+                                // 【安全ガード】フォルダ名が既に新しい名前と同じなら、OSにリネーム命令を出さず成功扱いとする（「(1)」付与誤作動を完全に防止）
+                                val currentFolderName = relativePath.substringAfterLast('/')
+                                if (currentFolderName == sanitizedNewLabel) {
                                     folderRenamed = true
+                                } else {
+                                    val folderDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(baseTree, treeDocId)
+                                    val renamedDocUri = android.provider.DocumentsContract.renameDocument(resolver, folderDocUri, sanitizedNewLabel)
+                                    if (renamedDocUri != null) {
+                                        val newDocId = android.provider.DocumentsContract.getDocumentId(renamedDocUri)
+                                        currentFolderDocId = newDocId
+                                        folderRenamed = true
+                                    }
                                 }
                             }
                         } catch (e: Exception) {
@@ -2154,12 +2172,17 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
                         // ローカルフォルダ自体の名前変更
                         try {
-                            val parent = zipDir.parentFile
-                            if (parent != null) {
-                                val newDir = java.io.File(parent, sanitizedNewLabel)
-                                if (zipDir.renameTo(newDir)) {
-                                    currentZipDir = newDir
-                                    folderRenamed = true
+                            // 【安全ガード】フォルダ名が既に新しいラベル名と同じなら、リネーム命令を出さず即時成功扱いとする（誤作動防止）
+                            if (zipDir.name == sanitizedNewLabel) {
+                                folderRenamed = true
+                            } else {
+                                val parent = zipDir.parentFile
+                                if (parent != null) {
+                                    val newDir = java.io.File(parent, sanitizedNewLabel)
+                                    if (zipDir.renameTo(newDir)) {
+                                        currentZipDir = newDir
+                                        folderRenamed = true
+                                    }
                                 }
                             }
                         } catch (e: Exception) {

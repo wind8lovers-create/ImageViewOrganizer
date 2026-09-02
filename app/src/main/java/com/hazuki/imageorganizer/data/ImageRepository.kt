@@ -92,16 +92,32 @@ class ImageRepository(private val context: Context) {
             DocumentsContract.Document.COLUMN_MIME_TYPE,
         )
 
-        data class RawEntry(val documentId: String, val name: String, val size: Long, val lastModified: Long, val mime: String)
+        data class RawEntry(
+            val documentId: String,
+            val name: String,
+            val size: Long,
+            val lastModified: Long,
+            val mime: String,
+            val parentFolderName: String
+        )
 
         val rawEntries = mutableListOf<RawEntry>()
-        // 下層フォルダ探索用のキュー（includeSubFoldersがtrueの時にサブフォルダを追加していく）
-        val folderQueue = java.util.ArrayDeque<String>()
-        folderQueue.add(rootDocId)
+        // 下層フォルダ探索用のキュー（docId と そのフォルダ名をペアで保持）
+        val folderQueue = java.util.ArrayDeque<Pair<String, String>>()
+        
+        // ルートフォルダ名を取得（取得できなければ ""）
+        val initialFolderName = try {
+            val rootUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocId)
+            resolver.query(rootUri, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) ?: "" else ""
+            } ?: ""
+        } catch (e: Exception) { "" }
+
+        folderQueue.add(rootDocId to initialFolderName)
 
         try {
             while (!folderQueue.isEmpty()) {
-                val currentDocId = folderQueue.poll() ?: break
+                val (currentDocId, currentFolderName) = folderQueue.poll() ?: break
                 val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, currentDocId)
 
                 resolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
@@ -113,18 +129,20 @@ class ImageRepository(private val context: Context) {
 
                     while (cursor.moveToNext()) {
                         val docId = cursor.getString(idCol)
+                        val name = cursor.getString(nameCol) ?: "unknown"
                         val mime = cursor.getString(mimeCol) ?: ""
                         if (IMAGE_MIME_PREFIXES.any { mime.startsWith(it) }) {
                             rawEntries += RawEntry(
                                 documentId = docId,
-                                name = cursor.getString(nameCol) ?: "unknown",
+                                name = name,
                                 size = cursor.getLong(sizeCol),
                                 lastModified = cursor.getLong(dateCol),
-                                mime = mime
+                                mime = mime,
+                                parentFolderName = currentFolderName
                             )
                         } else if (includeSubFolders && mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                            // 下層フォルダを含める場合、サブフォルダを探索キューに追加
-                            folderQueue.add(docId)
+                            // 下層フォルダを含める場合、サブフォルダの名前を付けて探索キューに追加
+                            folderQueue.add(docId to name)
                         }
                     }
                 }
@@ -153,7 +171,8 @@ class ImageRepository(private val context: Context) {
                     dateTakenEpochMillis = null, // 必要になるまでEXIFは読まない(遅延)
                     mimeType = entry.mime,
                     width = 0,
-                    height = 0
+                    height = 0,
+                    parentFolderName = entry.parentFolderName.ifBlank { null }
                 )
             }
             accumulated += items
@@ -172,6 +191,7 @@ class ImageRepository(private val context: Context) {
             MediaStore.Images.Media.MIME_TYPE,
             MediaStore.Images.Media.WIDTH,
             MediaStore.Images.Media.HEIGHT,
+            MediaStore.Images.Media.BUCKET_DISPLAY_NAME, // 所属フォルダ名
         )
         val sortOrder = "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
 
@@ -195,11 +215,13 @@ class ImageRepository(private val context: Context) {
             val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.MIME_TYPE)
             val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.WIDTH)
             val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.HEIGHT)
+            val bucketCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idCol)
                 val uri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
                 val name = cursor.getString(nameCol) ?: continue
+                val bucketName = cursor.getString(bucketCol)
                 accumulated += ImageItem(
                     id = id,
                     uri = uri,
@@ -210,7 +232,8 @@ class ImageRepository(private val context: Context) {
                     dateTakenEpochMillis = null, // 必要になるまでEXIFは読まない(遅延、大量枚数での初期読込を高速化)
                     mimeType = cursor.getString(mimeCol) ?: "image/*",
                     width = cursor.getInt(widthCol),
-                    height = cursor.getInt(heightCol)
+                    height = cursor.getInt(heightCol),
+                    parentFolderName = bucketName
                 )
                 sinceLastEmit++
                 if (sinceLastEmit >= STREAM_BATCH_SIZE) {
@@ -275,7 +298,8 @@ class ImageRepository(private val context: Context) {
                     mimeType = android.webkit.MimeTypeMap.getSingleton()
                         .getMimeTypeFromExtension(file.extension.lowercase()) ?: "image/*",
                     width = 0,
-                    height = 0
+                    height = 0,
+                    parentFolderName = file.parentFile?.name
                 )
             }
             accumulated += items

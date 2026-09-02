@@ -256,10 +256,15 @@ object RenameMoveHelper {
                 "${sanitizedLabel}_${groupCode}_${imageCode}"
             }
             val newFile = File(parent, newName)
-            val ok = try {
-                srcFile.renameTo(newFile)
-            } catch (e: Exception) {
-                false
+            // 【安全ガード】すでに目的の名前と同じなら、OSにリネーム命令を出さず成功扱いとする（誤作動防止）
+            val ok = if (srcFile.name == newName) {
+                true
+            } else {
+                try {
+                    srcFile.renameTo(newFile)
+                } catch (e: Exception) {
+                    false
+                }
             }
 
             if (!ok) {
@@ -367,7 +372,12 @@ object RenameMoveHelper {
             val newName = if (ext.isNotBlank()) "${newLabel}_${groupCode}_${imageCode}.$ext" else "${newLabel}_${groupCode}_${imageCode}"
             val newFile = File(folder, newName)
 
-            val ok = try { target.file.renameTo(newFile) } catch (e: Exception) { false }
+            // 【安全ガード】すでに目的の名前と同じなら、OSにリネーム命令を出さず成功扱いとする（誤作動防止）
+            val ok = if (target.file.name == newName) {
+                true
+            } else {
+                try { target.file.renameTo(newFile) } catch (e: Exception) { false }
+            }
             if (!ok) {
                 var rollbackFailed = false
                 renamedPairs.asReversed().forEach { (orig, ren) ->
@@ -399,7 +409,12 @@ object RenameMoveHelper {
                 val newName = if (ext.isNotBlank()) "${newLabel}_${groupCode}_${imageCode}.$ext" else "${newLabel}_${groupCode}_${imageCode}"
                 val newFile = File(folder, newName)
 
-                val ok = try { target.file.renameTo(newFile) } catch (e: Exception) { false }
+                // 【安全ガード】すでに目的の名前と同じなら、OSにリネーム命令を出さず成功扱いとする（誤作動防止）
+                val ok = if (target.file.name == newName) {
+                    true
+                } else {
+                    try { target.file.renameTo(newFile) } catch (e: Exception) { false }
+                }
                 if (!ok) {
                     var rollbackFailed = false
                     renamedPairs.asReversed().forEach { (orig, ren) ->

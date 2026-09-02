@@ -120,6 +120,66 @@ data class OrganizerUiState(
     val isSelectionMode: Boolean = false, // 選択モード中かどうか
 
     // ---- フォルダ階層移動（親フォルダへ戻る「..⤴」機能） ----
-    val canNavigateUp: Boolean = false // 上の階層に戻れるかどうか（下層フォルダに潜っている場合のみ true）
+    val canNavigateUp: Boolean = false, // 上の階層に戻れるかどうか（下層フォルダに潜っている場合のみ true）
+
+    // ---- フォーカス中のファイル（タップ・選択直近のファイル） ----
+    // 拡張選択メニューのファイル表示欄（所属フォルダ・ファイル名・○/◎枚目）で利用
+    val focusedImageId: Long? = null
+) {
+    /**
+     * 現在フォーカスされている画像オブジェクトを取得
+     * 1. focusedImageId があればそれを優先
+     * 2. なければ selectedIds の中の1枚、あるいは originImageId
+     */
+    val focusedImage: ImageItem?
+        get() = entries.firstOrNull { it.id == focusedImageId }
+            ?: entries.firstOrNull { it.id in selectedIds }
+            ?: entries.firstOrNull { it.id == originImageId }
+
+    /**
+     * 【フォーカスファイル情報】
+     * フォルダ名、ファイル名、およびリネーム規則に基づく「○/◎枚目」の表示情報をまとめます。
+     */
+    val focusedFileInfo: FocusedFileInfo?
+        get() {
+            val item = focusedImage ?: return null
+            // 所属フォルダ名（下層フォルダ読み込み時は実際の親フォルダ、それ以外は現在のフォルダ名）
+            val folderName = item.parentFolderName ?: currentFolderLabel.ifBlank { "フォルダ" }
+            val fileName = item.displayName
+
+            // リネーム規則（例: 01_犬_12_33.jpg）の解析
+            val renameInfo = com.hazuki.imageorganizer.data.RenameMoveHelper.parseRenamedFileInfo(fileName)
+            val countText = if (renameInfo != null) {
+                // 同じグループキー（例: 01_犬_12）を持つ画像が一覧内に何枚あるかをリアルタイム算出
+                val totalInGroup = entries.count {
+                    com.hazuki.imageorganizer.data.RenameMoveHelper.parseRenamedFileInfo(it.displayName)?.groupKey == renameInfo.groupKey
+                }
+                val currentSeq = com.hazuki.imageorganizer.data.RenameMoveHelper.fromSeqCode(renameInfo.seqCode)
+                if (currentSeq != null && totalInGroup > 0) {
+                    "${currentSeq}/${totalInGroup}枚目"
+                } else {
+                    "- / -"
+                }
+            } else {
+                "- / -"
+            }
+
+            return FocusedFileInfo(
+                folderName = folderName,
+                fileName = fileName,
+                countText = countText
+            )
+        }
+}
+
+/**
+ * 【フォーカス中ファイルの表示情報】
+ * 拡張選択メニュー上部のファイル表示欄で使用するデータクラス
+ */
+data class FocusedFileInfo(
+    val folderName: String, // 所属フォルダ名（例: "01_犬"）
+    val fileName: String,   // ファイル名（例: "01_犬_12_33.jpg"）
+    val countText: String   // グループ内の枚数情報（例: "33/50枚目" または "- / -"）
 )
+
 

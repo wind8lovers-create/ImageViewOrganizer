@@ -26,7 +26,9 @@ data class ImageItem(
     var avgSaturation: Float? = null,
     var avgBrightness: Float? = null,
     // 拡張機能(スタイル一致度検索)用の代表色パレット(5色+割合)。計算前は null。
-    var colorPalette: List<ColorPalette.PaletteColor>? = null
+    var colorPalette: List<ColorPalette.PaletteColor>? = null,
+    // 【所属フォルダ名】画像が実際に置かれている親フォルダの名前（下層フォルダ読み込み時などに利用）
+    val parentFolderName: String? = null
 ) {
     /** 拡張子(ドット無し、小文字) */
     val extension: String

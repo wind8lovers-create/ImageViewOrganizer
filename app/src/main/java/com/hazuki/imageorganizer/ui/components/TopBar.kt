@@ -26,6 +26,9 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -97,12 +100,13 @@ fun OrganizerTopBar(
     extensionSelectionActive: Boolean,
     onToggleExtensionSelection: () -> Unit,
     matchedCount: Int,
-    saturationTolerance: Float,
-    onSaturationChange: (Float) -> Unit,
-    brightnessTolerance: Float,
-    onBrightnessChange: (Float) -> Unit,
-    colorPresetStep: Int,
-    onCyclePreset: () -> Unit,
+    focusedFileInfo: com.hazuki.imageorganizer.viewmodel.FocusedFileInfo? = null,
+    saturationTolerance: Float = 0f,
+    onSaturationChange: (Float) -> Unit = {},
+    brightnessTolerance: Float = 0f,
+    onBrightnessChange: (Float) -> Unit = {},
+    colorPresetStep: Int = 0,
+    onCyclePreset: () -> Unit = {},
     // 下層フォルダも含めて読み込むかどうかのフラグ（デフォルト: false = 現在のフォルダ直下のみ読み込み）
     includeSubFolders: Boolean = false,
     // 下層フォルダ読み込みのON/OFF切り替えコールバック
@@ -416,12 +420,7 @@ fun OrganizerTopBar(
         if (extensionSelectionActive) {
             ExtensionSelectionPanel(
                 matchedCount = matchedCount,
-                saturationTolerance = saturationTolerance,
-                onSaturationChange = onSaturationChange,
-                brightnessTolerance = brightnessTolerance,
-                onBrightnessChange = onBrightnessChange,
-                colorPresetStep = colorPresetStep,
-                onCyclePreset = onCyclePreset,
+                focusedFileInfo = focusedFileInfo,
                 // 下層フォルダ読み込み状態と切り替えコールバックを伝達
                 includeSubFolders = includeSubFolders,
                 onToggleIncludeSubFolders = onToggleIncludeSubFolders,
@@ -615,18 +614,13 @@ fun SelectionMenuButton(
 /**
  * 【拡張選択パネル】
  * 拡張選択 ON 時に表示される詳細フィルターパネル
- * 1行目: 彩度スライダー ＋ 明度スライダー ＋ プリセットA/B/C切り替え
+ * 1行目: 下層📁切り替えボタン ＋ フォーカスファイル情報（[📁:〇〇〇] [🖼️:●●●] [🏷️:○/◎枚目]）
  * 2行目: ハッシュ値スイッチ ＋ 縦横比スイッチ ＋ RGB5色スライダー ＋ 一致件数表示
  */
 @Composable
 fun ExtensionSelectionPanel(
     matchedCount: Int,
-    saturationTolerance: Float,
-    onSaturationChange: (Float) -> Unit,
-    brightnessTolerance: Float,
-    onBrightnessChange: (Float) -> Unit,
-    colorPresetStep: Int,
-    onCyclePreset: () -> Unit,
+    focusedFileInfo: com.hazuki.imageorganizer.viewmodel.FocusedFileInfo? = null,
     // 下層フォルダも含めて読み込むかどうかのフラグ（デフォルト: false = 直下のみ）
     includeSubFolders: Boolean = false,
     // 下層フォルダ読み込みのON/OFF切り替えコールバック
@@ -639,7 +633,14 @@ fun ExtensionSelectionPanel(
     aspectRatioOnly: Boolean = false,
     onToggleAspectRatioOnly: (Boolean) -> Unit = {},
     styleMatchThreshold: Float,
-    onStyleMatchThresholdChange: (Float) -> Unit
+    onStyleMatchThresholdChange: (Float) -> Unit,
+    // 互換性のための残置パラメータ（デフォルト引数）
+    saturationTolerance: Float = 0f,
+    onSaturationChange: (Float) -> Unit = {},
+    brightnessTolerance: Float = 0f,
+    onBrightnessChange: (Float) -> Unit = {},
+    colorPresetStep: Int = 0,
+    onCyclePreset: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -647,80 +648,113 @@ fun ExtensionSelectionPanel(
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f))
             .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
-        // 1列目: 彩度・明度・プリセット（横スクロール可能）
+        // 1列目: 下層📁切り替えボタン ＋ フォーカス中ファイル情報表示枠（横スクロール可能）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "彩度",
-                style = MaterialTheme.typography.labelSmall,
-                color = FujiPrimaryDark,
-                fontWeight = FontWeight.Bold
-            )
-            Slider(
-                value = saturationTolerance,
-                onValueChange = onSaturationChange,
-                valueRange = 0f..0.35f,
-                modifier = Modifier
-                    .width(180.dp) // さらに120%拡大（150dp ➔ 180dp）で微調整をより快適に
-                    .padding(horizontal = 4.dp),
-                colors = SliderDefaults.colors(thumbColor = FujiPrimaryDark, activeTrackColor = FujiPrimary)
-            )
-            Text(
-                text = "${(saturationTolerance * 100).toInt()}%",
-                style = MaterialTheme.typography.labelSmall,
-                color = FujiPrimaryDark
-            )
-
-            Text(
-                text = "明度",
-                style = MaterialTheme.typography.labelSmall,
-                color = FujiPrimaryDark,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(start = 12.dp)
-            )
-            Slider(
-                value = brightnessTolerance,
-                onValueChange = onBrightnessChange,
-                valueRange = 0f..0.35f,
-                modifier = Modifier
-                    .width(180.dp) // さらに120%拡大（150dp ➔ 180dp）で微調整をより快適に
-                    .padding(horizontal = 4.dp),
-                colors = SliderDefaults.colors(thumbColor = FujiPrimaryDark, activeTrackColor = FujiPrimary)
-            )
-            Text(
-                text = "${(brightnessTolerance * 100).toInt()}%",
-                style = MaterialTheme.typography.labelSmall,
-                color = FujiPrimaryDark
-            )
-
-            // ---- プリセット切り替えボタン（SET:0 ➔ SET:A ➔ SET:B ➔ SET:C） ----
-            FilterChip(
-                selected = colorPresetStep != 0,
-                onClick = onCyclePreset,
-                label = { Text("SET:${presetStepLabel(colorPresetStep)}") },
-                modifier = Modifier.padding(start = 12.dp),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = FujiPrimary,
-                    selectedLabelColor = Color.White
-                )
-            )
-
-            // ---- 下層フォルダ読み込み切り替えボタン（下層📁:OFF / 下層📁:ON） ----
-            // デフォルトはOFF（直下のみ）。タップしてONにすると下層フォルダも含めて再読込
+            // ---- ① 一番左: 下層フォルダ読み込み切り替えボタン（下層📁:OFF / 下層📁:ON） ----
             FilterChip(
                 selected = includeSubFolders,
                 onClick = onToggleIncludeSubFolders,
                 label = { Text(if (includeSubFolders) "下層📁:ON" else "下層📁:OFF") },
-                modifier = Modifier.padding(start = 8.dp),
+                modifier = Modifier.padding(end = 10.dp),
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = FujiPrimary,
                     selectedLabelColor = Color.White
                 )
             )
+
+            // ---- ② その右: フォーカスしているファイルの表示欄 ----
+            if (focusedFileInfo != null) {
+                // 【所属フォルダ名】 [📁：〇〇〇]
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = FujiPrimary.copy(alpha = 0.15f),
+                    modifier = Modifier.padding(end = 10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Folder,
+                            contentDescription = "フォルダ名",
+                            tint = FujiPrimaryDark,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = focusedFileInfo.folderName,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = FujiPrimaryDark,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                // 【ファイル名】 [🖼️：●●●]
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = FujiPrimary.copy(alpha = 0.15f),
+                    modifier = Modifier.padding(end = 10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Image,
+                            contentDescription = "ファイル名",
+                            tint = FujiPrimaryDark,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = focusedFileInfo.fileName,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = FujiPrimaryDark,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                // 【枚数情報】 [🏷️：○/◎枚目]
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = FujiPrimary.copy(alpha = 0.15f),
+                    modifier = Modifier.padding(end = 10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Bookmark,
+                            contentDescription = "枚数情報",
+                            tint = FujiPrimaryDark,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = focusedFileInfo.countText,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = FujiPrimaryDark,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            } else {
+                // まだタップ・フォーカスされた画像がない場合の案内表示
+                Text(
+                    text = "画像をタップするとファイル情報を表示します",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = FujiPrimaryDark.copy(alpha = 0.6f),
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
         }
 
         // 2列目: ハッシュ値（スイッチ＋180dpスライダー）・RGB5色・一致件数（横スクロール可能）

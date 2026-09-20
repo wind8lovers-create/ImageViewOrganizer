@@ -214,7 +214,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         recordHistory: Boolean = true,
         scrollTarget: Int = 0,
         clearBackStack: Boolean = true,
-        targetDocId: String? = null
+        targetDocId: String? = null,
+        // 【特定画像へのスクロールターゲット】フォルダ読込完了後に、この画像IDの位置へ最上部スクロールします
+        targetImageId: Long? = null
     ) {
         if (clearBackStack) {
             clearFolderBackStack()
@@ -257,7 +259,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                     .onCompletion {
                         _uiState.update { s -> s.copy(isStreaming = false) }
                         applyDisplayList()
-                        requestScroll(scrollTarget)
+                        // targetImageIdが指定されている場合はその画像の位置へ、なければscrollTargetへスクロール
+                        val finalScroll = if (targetImageId != null) {
+                            val foundIndex = _uiState.value.entries.indexOfFirst { it.id == targetImageId }
+                            if (foundIndex >= 0) foundIndex else scrollTarget
+                        } else {
+                            scrollTarget
+                        }
+                        requestScroll(finalScroll)
                     }
                     .collect { progress -> onBatchReceived(progress) }
             } catch (e: SecurityException) {
@@ -556,16 +565,34 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         reloadCurrentFolder()
     }
 
-    /** 拡張選択を解除し、通常の一覧表示に戻す。基準画像(origin)の位置まで一覧をスクロールさせる。 */
+    /**
+     * 拡張選択（★）を解除し、通常の一覧表示に戻す。
+     *
+     * 【追跡＆最上部スクロール動作】
+     * 1. 追跡対象のターゲット画像を特定：
+     *    - 複数選択されている場合は「ソート順で一番先頭にある選択ファイル」を追跡
+     *    - 選択されていない場合は「直前にタップ（フォーカス）したファイル」を追跡
+     * 2. ターゲット画像が現在と異なるサブフォルダ（下層フォルダ）に属している場合：
+     *    - 現在のフォルダを戻り履歴スタックに退避（「..⤴」ボタンで元の親フォルダへ戻れるようにする）
+     *    - ターゲット画像のサブフォルダへ移動して読み込み、完了時にその画像を一覧の最上部にスクロール
+     * 3. ターゲット画像が現在のフォルダ内にある場合：
+     *    - フォルダ移動は行わず、通常一覧の中でその画像を最上部にスクロール
+     */
     private fun disableExtensionSelection() {
-        val originId = _uiState.value.originImageId
-        val hadSubFolders = _uiState.value.includeSubFolders
+        val currentState = _uiState.value
+
+        // ① 追跡対象のターゲット画像を特定
+        // 複数選択時はソート順で一番最初に選択されている画像。未選択時はフォーカス中画像、それもなければ起動時の基準画像
+        val targetImage = currentState.entries.firstOrNull { it.id in currentState.selectedIds }
+            ?: currentState.focusedImage
+            ?: currentState.entries.firstOrNull { it.id == currentState.originImageId }
+
+        val baseTree = rootTreeUri ?: currentFolderUri
 
         _uiState.update {
             it.copy(
                 extensionSelectionActive = false,
                 originImageId = null,
-                includeSubFolders = false, // 拡張選択終了時は直下のみ（OFF）に戻す
                 hashMatchEnabled = false,
                 saturationTolerance = 0f,
                 brightnessTolerance = 0f,
@@ -577,16 +604,35 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             )
         }
 
-        // もし下層を含めた全件読み込み状態だった場合は、直下のみの一覧へ再読込する
-        if (hadSubFolders) {
-            reloadCurrentFolder()
-        } else {
-            applyDisplayList()
-        }
+        // ② 別フォルダ（下層フォルダ）の画像かどうかを判定
+        val targetDocId = targetImage?.parentFolderDocId
+        val isDifferentSubFolder = targetDocId != null && targetDocId != currentFolderDocId && baseTree != null
 
-        if (originId != null) {
-            val restoredIndex = _uiState.value.entries.indexOfFirst { it.id == originId }
-            if (restoredIndex >= 0) requestScroll(restoredIndex)
+        if (isDifferentSubFolder && targetImage != null) {
+            // 【別フォルダへ移動】
+            // 移動前に現在の親フォルダを戻りスタックに積む（あとから「..⤴」ボタンで親に戻れます）
+            pushCurrentFolderToBackStack()
+            val folderName = targetImage.parentFolderName ?: "フォルダ"
+            openFolder(
+                treeUri = baseTree!!,
+                label = folderName,
+                recordHistory = false,
+                clearBackStack = false,
+                targetDocId = targetDocId,
+                targetImageId = targetImage.id // 読込完了後にこの画像の先頭へスクロール
+            )
+        } else {
+            // 【同じフォルダ内の場合】
+            // 通常の一覧表示へ反映
+            applyDisplayList()
+
+            // ターゲット画像の位置を特定し、最上部にスクロール
+            if (targetImage != null) {
+                val restoredIndex = _uiState.value.entries.indexOfFirst { it.id == targetImage.id }
+                if (restoredIndex >= 0) {
+                    requestScroll(restoredIndex)
+                }
+            }
         }
     }
 

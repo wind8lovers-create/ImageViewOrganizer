@@ -1,4 +1,4 @@
-*.iml
+﻿*.iml
 .gradle
 .kotlin/
 /local.properties
@@ -38,3 +38,16 @@ env/
 *.sln.docstates
 # Windowsのフォルダ表示用一時ファイル（Windows環境の場合）
 Thumbs.db
+# Node / Next.js
+node_modules/
+.next/
+out/
+tsconfig.tsbuildinfo
+
+# 環境変数・機密情報
+.env*.local
+.env
+
+# キャッシュ・ローカルデータ（必要に応じて）
+data/gmail_cache/
+data/sessions/

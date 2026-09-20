@@ -28,7 +28,9 @@ data class ImageItem(
     // 拡張機能(スタイル一致度検索)用の代表色パレット(5色+割合)。計算前は null。
     var colorPalette: List<ColorPalette.PaletteColor>? = null,
     // 【所属フォルダ名】画像が実際に置かれている親フォルダの名前（下層フォルダ読み込み時などに利用）
-    val parentFolderName: String? = null
+    val parentFolderName: String? = null,
+    // 【所属フォルダのDocId】SAF（ストレージアクセスフレームワーク）で親フォルダへ移動する際に使用する内部識別子
+    val parentFolderDocId: String? = null
 ) {
     /** 拡張子(ドット無し、小文字) */
     val extension: String

@@ -416,14 +416,24 @@ fun OrganizerTopBar(
             }
         }
 
-        // 拡張選択パネル（拡張選択 ON 時のみ表示）
+        // =========================================================================
+        // 【1行目：常時表示】ファイル情報・下層フォルダ切り替えバー
+        // ★ボタンのON/OFFに関係なく、常に画面上部に表示してファイル情報確認や
+        // 下層フォルダ読み込みの切り替えを行えるようにします。
+        // =========================================================================
+        FocusedFileInfoBar(
+            includeSubFolders = includeSubFolders,
+            onToggleIncludeSubFolders = onToggleIncludeSubFolders,
+            focusedFileInfo = focusedFileInfo
+        )
+
+        // =========================================================================
+        // 【2行目：折りたたみ表示】拡張選択フィルターパネル
+        // ★ボタンがONのときだけ展開し、ハッシュ値やRGBなどの絞り込みスライダーを表示します。
+        // =========================================================================
         if (extensionSelectionActive) {
-            ExtensionSelectionPanel(
+            ExtensionFilterPanel(
                 matchedCount = matchedCount,
-                focusedFileInfo = focusedFileInfo,
-                // 下層フォルダ読み込み状態と切り替えコールバックを伝達
-                includeSubFolders = includeSubFolders,
-                onToggleIncludeSubFolders = onToggleIncludeSubFolders,
                 hashMatchEnabled = hashMatchEnabled,
                 onToggleHashMatch = onToggleHashMatch,
                 hashMatchThreshold = hashMatchThreshold,
@@ -617,38 +627,32 @@ fun SelectionMenuButton(
  * 1行目: 下層📁切り替えボタン ＋ フォーカスファイル情報（[📁:〇〇〇] [🖼️:●●●] [🏷️:○/◎枚目]）
  * 2行目: ハッシュ値スイッチ ＋ 縦横比スイッチ ＋ RGB5色スライダー ＋ 一致件数表示
  */
+/**
+ * =========================================================================
+ * 【1行目：常時表示】ファイル情報・下層フォルダ切り替えバー
+ * =========================================================================
+ * 画面上部に常に表示されるバーです。
+ * - 左端：「下層📁:OFF / ON」切り替えボタン（タップで配下全フォルダ読み込み）
+ * - 右側：現在フォーカス（タップ選択）されている画像のフォルダ名・ファイル名・グループ枚数情報
+ * を横スクロールで一覧表示します。
+ */
 @Composable
-fun ExtensionSelectionPanel(
-    matchedCount: Int,
-    focusedFileInfo: com.hazuki.imageorganizer.viewmodel.FocusedFileInfo? = null,
-    // 下層フォルダも含めて読み込むかどうかのフラグ（デフォルト: false = 直下のみ）
+fun FocusedFileInfoBar(
+    // 下層フォルダも含めて読み込むかどうかのフラグ（OFF: 現在のフォルダ直下のみ / ON: 配下すべて）
     includeSubFolders: Boolean = false,
-    // 下層フォルダ読み込みのON/OFF切り替えコールバック
+    // 下層フォルダ読み込み切り替えのタップ時処理
     onToggleIncludeSubFolders: () -> Unit = {},
-    hashMatchEnabled: Boolean,
-    onToggleHashMatch: (Boolean) -> Unit,
-    // ハッシュ値の許容閾値（1〜40、デフォルト10）。スライダーで調整可能
-    hashMatchThreshold: Int = 10,
-    onHashMatchThresholdChange: (Int) -> Unit = {},
-    aspectRatioOnly: Boolean = false,
-    onToggleAspectRatioOnly: (Boolean) -> Unit = {},
-    styleMatchThreshold: Float,
-    onStyleMatchThresholdChange: (Float) -> Unit,
-    // 互換性のための残置パラメータ（デフォルト引数）
-    saturationTolerance: Float = 0f,
-    onSaturationChange: (Float) -> Unit = {},
-    brightnessTolerance: Float = 0f,
-    onBrightnessChange: (Float) -> Unit = {},
-    colorPresetStep: Int = 0,
-    onCyclePreset: () -> Unit = {}
+    // 現在選択中のファイル情報（フォルダ名、ファイル名、枚数カウント等）
+    focusedFileInfo: com.hazuki.imageorganizer.viewmodel.FocusedFileInfo? = null
 ) {
-    Column(
+    // 背景色と余白を設定（トップバーと統一感のある半透明サーフェス色）
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f))
-            .padding(horizontal = 8.dp, vertical = 6.dp)
+            .padding(horizontal = 8.dp, vertical = 5.dp)
     ) {
-        // 1列目: 下層📁切り替えボタン ＋ フォーカス中ファイル情報表示枠（横スクロール可能）
+        // 横スクロール可能な行レイアウト
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -656,6 +660,7 @@ fun ExtensionSelectionPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // ---- ① 一番左: 下層フォルダ読み込み切り替えボタン（下層📁:OFF / 下層📁:ON） ----
+            // タップするだけで直下のみ表示とサブフォルダ一括表示を瞬時に切り替えられます
             FilterChip(
                 selected = includeSubFolders,
                 onClick = onToggleIncludeSubFolders,
@@ -756,12 +761,41 @@ fun ExtensionSelectionPanel(
                 )
             }
         }
+    }
+}
 
-        // 2列目: ハッシュ値（スイッチ＋180dpスライダー）・RGB5色・一致件数（横スクロール可能）
+/**
+ * =========================================================================
+ * 【2行目：折りたたみ表示】拡張選択フィルターパネル
+ * =========================================================================
+ * ★ボタンがONのときだけ表示されるコントロールバーです。
+ * - ハッシュ値スイッチ＆スライダー（＋／−ボタン付き）
+ * - RGB5色スライダー
+ * - 一致件数の表示
+ */
+@Composable
+fun ExtensionFilterPanel(
+    matchedCount: Int,
+    hashMatchEnabled: Boolean,
+    onToggleHashMatch: (Boolean) -> Unit,
+    // ハッシュ値の許容閾値（1〜17）。スライダーや＋／−ボタンで調整可能
+    hashMatchThreshold: Int = 10,
+    onHashMatchThresholdChange: (Int) -> Unit = {},
+    aspectRatioOnly: Boolean = false,
+    onToggleAspectRatioOnly: (Boolean) -> Unit = {},
+    styleMatchThreshold: Float,
+    onStyleMatchThresholdChange: (Float) -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f))
+            .padding(start = 8.dp, end = 8.dp, bottom = 6.dp, top = 0.dp)
+    ) {
+        // ハッシュ値（スイッチ＋130dpスライダー）・RGB5色・一致件数（横スクロール可能）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 4.dp)
                 .horizontalScroll(rememberScrollState()),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -796,7 +830,7 @@ fun ExtensionSelectionPanel(
                 )
             }
 
-            // ---- ハッシュ値 閾値スライダー（1〜17、108dpの120% = 130dp幅） ----
+            // ---- ハッシュ値 閾値スライダー（1〜17、130dp幅） ----
             // スイッチがONのときだけ操作可能。数値が小さいほど厳密一致、大きいほど大まか一致
             Slider(
                 value = hashMatchThreshold.toFloat(),
@@ -804,7 +838,7 @@ fun ExtensionSelectionPanel(
                 valueRange = 1f..17f,
                 enabled = hashMatchEnabled,
                 modifier = Modifier
-                    .width(130.dp) // 現在の108dpから120%（約130dp）に拡大し、指での操作性を向上
+                    .width(130.dp)
                     .padding(horizontal = 2.dp),
                 colors = SliderDefaults.colors(thumbColor = FujiPrimaryDark, activeTrackColor = FujiPrimary)
             )
@@ -843,7 +877,7 @@ fun ExtensionSelectionPanel(
                 onValueChange = { onStyleMatchThresholdChange(mapSliderToThreshold(it)) },
                 valueRange = 0f..1f,
                 modifier = Modifier
-                    .width(180.dp) // さらに120%拡大（150dp ➔ 180dp）で微調整をより快適に
+                    .width(180.dp)
                     .padding(horizontal = 4.dp),
                 colors = SliderDefaults.colors(thumbColor = FujiPrimaryDark, activeTrackColor = FujiPrimary)
             )

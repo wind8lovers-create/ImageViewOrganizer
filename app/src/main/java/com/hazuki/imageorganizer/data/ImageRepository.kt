@@ -98,7 +98,9 @@ class ImageRepository(private val context: Context) {
             val size: Long,
             val lastModified: Long,
             val mime: String,
-            val parentFolderName: String
+            val parentFolderName: String,
+            // 【親フォルダDocId】SAFでサブフォルダ移動を行うための内部識別子
+            val parentFolderDocId: String? = null
         )
 
         val rawEntries = mutableListOf<RawEntry>()
@@ -138,7 +140,8 @@ class ImageRepository(private val context: Context) {
                                 size = cursor.getLong(sizeCol),
                                 lastModified = cursor.getLong(dateCol),
                                 mime = mime,
-                                parentFolderName = currentFolderName
+                                parentFolderName = currentFolderName,
+                                parentFolderDocId = currentDocId
                             )
                         } else if (includeSubFolders && mime == DocumentsContract.Document.MIME_TYPE_DIR) {
                             // 下層フォルダを含める場合、サブフォルダの名前を付けて探索キューに追加
@@ -172,7 +175,8 @@ class ImageRepository(private val context: Context) {
                     mimeType = entry.mime,
                     width = 0,
                     height = 0,
-                    parentFolderName = entry.parentFolderName.ifBlank { null }
+                    parentFolderName = entry.parentFolderName.ifBlank { null },
+                    parentFolderDocId = entry.parentFolderDocId
                 )
             }
             accumulated += items

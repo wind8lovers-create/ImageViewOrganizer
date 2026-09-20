@@ -180,6 +180,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      * @param clearBackStack 起点フォルダとして開く場合はtrue（履歴スタックを初期化）
      */
     fun loadDocumentsFolder(scrollTarget: Int = 0, clearBackStack: Boolean = true) {
+        // 【ハッシュ計算の即時ストップ】別フォルダを読み込むため、実行中のハッシュ計算・比較を中断
+        cancelComparing()
+
         if (clearBackStack) {
             clearFolderBackStack()
         }
@@ -218,6 +221,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         // 【特定画像へのスクロールターゲット】フォルダ読込完了後に、この画像IDの位置へ最上部スクロールします
         targetImageId: Long? = null
     ) {
+        // 【ハッシュ計算の即時ストップ】フォルダ移動時に実行中のハッシュ計算・重複比較ジョブを即座に中断
+        cancelComparing()
+
         if (clearBackStack) {
             clearFolderBackStack()
             // 起点フォルダの権限（マスターキー）として保持
@@ -279,6 +285,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     /** ZIP書庫を選択した際の読込。アプリキャッシュへ展開してから通常フォルダと同様に扱う。 */
     fun openZipFile(zipUri: Uri, label: String, recordHistory: Boolean = true, scrollTarget: Int = 0) {
+        // 【ハッシュ計算の即時ストップ】ZIP展開・読込前にハッシュ計算を即座に中断
+        cancelComparing()
+
         clearFolderBackStack()
         currentFolderUri = null
         _uiState.update {
@@ -446,6 +455,26 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
         // 「🏷️ グループ連番（枠色別）↓」ソートが選ばれている場合
         if (state.sortOption == SortOption.GROUP_SEQ_ASC) {
+            // 【自動フォールバック処理】
+            // グループ連番（_nn_mm形式）の画像がフォルダ内に1枚も存在しない場合、
+            // 「画像が見つかりませんでした」画面で作業が止まるのを防ぐため、
+            // 自動的にソート順を「日付 ↑（古い順）」へ切り替えて全画像を一覧表示します。
+            if (sorted.isEmpty() && allImages.isNotEmpty()) {
+                val fallbackOption = SortOption.DATE_ASC
+                val fallbackSorted = sortedImages(fallbackOption)
+                _uiState.update {
+                    it.copy(
+                        sortOption = fallbackOption, // ソート順を「日付 ↑」に更新
+                        entries = fallbackSorted,    // 日付順にソートされた全画像を一覧にセット
+                        isComparing = false,
+                        matchedCount = 0,
+                        extensionGroupColors = emptyMap(),
+                        snackbarMessage = "グループ連番の画像がないため、日付↑で表示しました"
+                    )
+                }
+                return
+            }
+
             val groupColors = mutableMapOf<Long, Char>()
             val groupKeyIndexMap = mutableMapOf<String, Int>()
 
@@ -566,6 +595,22 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
+     * 【ハッシュ計算・重複比較の即時中断】
+     * 実行中のハッシュ計算・重複比較ジョブを即座に安全中断し、
+     * 画面上部の進捗オーバーレイ（○○/○○枚 ○％）をクリアします。
+     */
+    fun cancelComparing() {
+        comparingJob?.cancel()
+        comparingJob = null
+        _uiState.update {
+            it.copy(
+                isComparing = false,
+                hashProgressText = null
+            )
+        }
+    }
+
+    /**
      * 拡張選択（★）を解除し、通常の一覧表示に戻す。
      *
      * 【追跡＆最上部スクロール動作】
@@ -579,6 +624,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      *    - フォルダ移動は行わず、通常一覧の中でその画像を最上部にスクロール
      */
     private fun disableExtensionSelection() {
+        // 【ハッシュ計算の即時ストップ】「★」ボタンで解除した瞬間に、裏のハッシュ計算を即座に中断
+        cancelComparing()
+
         val currentState = _uiState.value
 
         // ① 追跡対象のターゲット画像を特定
@@ -669,12 +717,25 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             val briTolerance = if (current.brightnessTolerance > 0f) current.brightnessTolerance else null
             val styleThreshold = current.styleMatchThreshold
 
-            // すべての条件が未指定の場合は、デフォルトでハッシュ値閾値10を適用
-            val effectiveHashThreshold = if (hashThreshold == null && satTolerance == null && briTolerance == null && styleThreshold <= 0f) {
-                current.hashMatchThreshold
-            } else {
-                hashThreshold
+            // 【ハッシュ値OFFかつ全条件未指定時の処理】
+            // ハッシュ値スイッチがOFFにされ、かつ他のフィルタ条件（彩度・明度・RGB5色）も指定されていない場合は、
+            // フィルタをかけずに全画像をそのまま通常の一覧として表示します。
+            val isNoFilter = !current.hashMatchEnabled && satTolerance == null && briTolerance == null && styleThreshold <= 0f
+            if (isNoFilter) {
+                _uiState.update {
+                    it.copy(
+                        entries = sorted, // フォルダ内の全画像を表示
+                        isComparing = false,
+                        matchedCount = 0,
+                        extensionGroupColors = emptyMap(),
+                        hashProgressText = null
+                    )
+                }
+                return@launch
             }
+
+            // ハッシュ値スイッチがONの場合のみ、その閾値を適用
+            val effectiveHashThreshold = hashThreshold
 
             // フォルダ内の全画像を総当たり比較して、2枚以上の類似グループを抽出
             val groups = ImageGrouping.group(
@@ -704,6 +765,26 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                     groupColors[img.id] = colorCategory
                     orderedEntries.add(img)
                 }
+            }
+
+            // 【ハッシュ値判定で該当なしの場合の自動切り替え処理】
+            // ハッシュ値比較がONだったが、条件に該当する重複・類似画像が1組もなかった（0件）場合、
+            // 「画像が見つかりませんでした」画面になるのを防ぎ、
+            // ハッシュ値スイッチを自動でOFFに切り替えて「該当する画像はありません」と案内し、
+            // フォルダ内の全画像をそのまま一覧表示します。
+            if (current.hashMatchEnabled && orderedEntries.isEmpty() && sorted.isNotEmpty()) {
+                _uiState.update {
+                    it.copy(
+                        hashMatchEnabled = false, // ハッシュ値スイッチを自動でOFFに切り替え
+                        entries = sorted,          // フォルダ内の全画像をすべて表示
+                        isComparing = false,
+                        matchedCount = 0,
+                        extensionGroupColors = emptyMap(),
+                        hashProgressText = null,
+                        snackbarMessage = "該当する画像はありません" // 通知メッセージを表示
+                    )
+                }
+                return@launch
             }
 
             _uiState.update {
@@ -1755,7 +1836,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                     } else {
                         // 直下に該当フォルダがない場合は、移動せずに案内を表示
                         _uiState.update {
-                            it.copy(snackbarMessage = "直下に「$label」フォルダはありません (長押しでラベル変更)")
+                            it.copy(snackbarMessage = "直下に「$label」フォルダはありません")
                         }
                     }
                 } catch (e: Exception) {
@@ -1767,7 +1848,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         } else {
             // フォルダが開かれていない場合
             _uiState.update {
-                it.copy(snackbarMessage = "直下に「$label」フォルダはありません (長押しでラベル変更)")
+                it.copy(snackbarMessage = "直下に「$label」フォルダはありません")
             }
         }
     }

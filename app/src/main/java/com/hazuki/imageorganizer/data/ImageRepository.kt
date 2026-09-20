@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 
 private val IMAGE_MIME_PREFIXES = listOf("image/")
 
@@ -386,8 +387,15 @@ class ImageRepository(private val context: Context) {
 
         var completedCount = 0
         targets.chunked(24).forEach { chunk ->
+            // 【キャンセル即時検知】
+            // ユーザーが途中で「★」を解除したり別フォルダへ移動した場合は、
+            // 次の24枚に進まず即座に処理を中断・脱出します
+            coroutineContext.ensureActive()
+
             chunk.map { item ->
                 async {
+                    // 各画像の計算前にもキャンセルされていないか確認
+                    coroutineContext.ensureActive()
                     val result = PerceptualHash.analyze(resolver, item.uri)
                     if (result != null) {
                         item.perceptualHash = result.hash

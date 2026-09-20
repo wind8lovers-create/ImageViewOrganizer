@@ -247,8 +247,8 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     onLabelSelectClick = { /* 今後の使用に備えて予約済み */ },
                     // 【ラベル選択ダイアログ実装】
                     // タグアイコン（Label）をタップでドロップダウンメニュー表示
-                    // ・長押し: ViewModel に通知して現在選択中ラベルを更新
-                    // ・通常タップ: 現在のフォルダ直下にそのラベルフォルダが存在すれば即座に移動
+                    // ・通常タップ: ViewModel に通知して現在選択中ラベルを更新
+                    // ・長押し: 現在のフォルダ直下にそのラベルフォルダが存在すれば即座に移動
                     onLabelSelected = { selectedLabel ->
                         viewModel.setCurrentSelectedLabel(selectedLabel)
                     },
@@ -311,11 +311,23 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                         ScreenMode.GALLERY -> {
                             if (state.isLoading) {
                                 CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                            } else if (state.entries.isEmpty()) {
+                            } else if (state.totalImageCount == 0) {
+                                // フォルダ内の総画像数が0枚（本当に空のフォルダ）の場合のみ、
+                                // 初期画面として「画像が見つかりませんでした（フォルダを選択する）」を表示
                                 EmptyFolderMessage(
                                     onOpenFolder = { folderPickerLauncher.launch(null) },
                                     modifier = Modifier.align(Alignment.Center)
                                 )
+                            } else if (state.entries.isEmpty()) {
+                                // フォルダ内に画像はあるが、検索・ソート等の条件で一時的に表示件数が0件になった場合は、
+                                // 作業が中断されないよう「フォルダを選択する」ボタンは出さず、シンプルな案内文のみを表示
+                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = "該当する画像がありません",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = FujiPrimaryDark.copy(alpha = 0.7f)
+                                    )
+                                }
                             } else {
                                 // 選択モード中(通常の分類登録、または画像追加モード)は、
                                 // 既に他のグループに入っている画像を暗く表示・選択不可にする(要件定義Q2)。

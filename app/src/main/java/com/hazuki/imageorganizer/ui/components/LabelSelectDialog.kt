@@ -33,8 +33,8 @@ import com.hazuki.imageorganizer.ui.theme.FujiPrimaryDark
  * 
  * 機能：
  * - TopBar の中央に配置されるタグアイコンボタンをタップで表示
- * - 通常タップ: カレントフォルダ直下にそのラベルのフォルダがあれば移動
- * - 長押し: 作業ラベル（currentLabel）を変更
+ * - 通常タップ: 作業ラベル（currentLabel）を変更
+ * - 長押し: カレントフォルダ直下にそのラベルのフォルダがあれば移動
  * =====================================================================
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -43,8 +43,8 @@ fun LabelSelectDialog(
     // ---- ラベル関連情報 ----
     labels: List<String>,                    // assets/labels.txt から読み込んだラベル一覧
     currentLabel: String,                    // 現在選択中のラベル（初期値）
-    onLabelSelected: (String) -> Unit,       // 【長押し時】ラベル変更コールバック
-    onLabelClick: (String) -> Unit = {},     // 【通常タップ時】サブフォルダ移動コールバック
+    onLabelSelected: (String) -> Unit,       // 【通常タップ時】ラベル変更コールバック
+    onLabelClick: (String) -> Unit = {},     // 【長押し時】サブフォルダ移動コールバック
     
     // ---- フォルダ階層移動（親フォルダへ戻る機能） ----
     canNavigateUp: Boolean = false,          // 上の階層へ戻れるかどうか（下層フォルダにいる時のみtrue）
@@ -74,7 +74,8 @@ fun LabelSelectDialog(
             Icon(
                 imageVector = Icons.Default.Label,
                 contentDescription = "ラベル選択",
-                tint = Color.White,
+                // 【アイコンカラー変更】指定色 #FF67C6（鮮やかなピンク）を適用して視認性を向上
+                tint = Color(0xFFFF67C6),
                 modifier = Modifier.size(20.dp)
             )
         }
@@ -131,14 +132,14 @@ fun LabelSelectDialog(
                         .fillMaxWidth()
                         .combinedClickable(
                             onClick = {
-                                // 通常タップ: サブフォルダ移動試行
-                                showMenu = false
-                                onLabelClick(label)
-                            },
-                            onLongClick = {
-                                // 長押し: ラベル名変更
+                                // 【通常タップ】作業ラベルを変更（currentLabel をこのラベルに切り替え）
                                 showMenu = false
                                 onLabelSelected(label)
+                            },
+                            onLongClick = {
+                                // 【長押し】サブフォルダ移動（直下に同名フォルダが存在すれば移動）
+                                showMenu = false
+                                onLabelClick(label)
                             }
                         )
                         .padding(horizontal = 14.dp, vertical = 10.dp),

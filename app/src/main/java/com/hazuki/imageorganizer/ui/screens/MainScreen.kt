@@ -242,9 +242,9 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     onSortOptionSelected = { selectedSort ->
                         viewModel.setSortOption(selectedSort)
                     },
-                    // ---- ラベル関連（新規） ----
                     displayLabel = state.currentSelectedLabel,
-                    onLabelSelectClick = { /* 今後の使用に備えて予約済み */ },
+                    // 【カテゴリーラベルタップによる選択モードON/OFF切り替え】
+                    onLabelSelectClick = { viewModel.toggleSelectionMode() },
                     // 【ラベル選択ダイアログ実装】
                     // タグアイコン（Label）をタップでドロップダウンメニュー表示
                     // ・通常タップ: ViewModel に通知して現在選択中ラベルを更新

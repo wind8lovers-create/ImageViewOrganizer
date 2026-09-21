@@ -903,18 +903,38 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
+     * 【カテゴリーラベルタップによる選択モードの切り替え】
+     * メニュー上部のカテゴリーラベルをタップした際に呼ばれます。
+     * - すでに選択モード中なら、選択をすべてクリアして通常モードに戻します。
+     * - 通常モードなら、最初は「0枚選択」の状態で選択モードを開始します（パターンB）。
+     */
+    fun toggleSelectionMode() {
+        val currentIsSelecting = _uiState.value.isSelectionMode || _uiState.value.selectionMode
+        if (currentIsSelecting) {
+            // すでに選択モード中の場合は、選択解除して通常表示に戻す
+            clearSelection()
+        } else {
+            // 通常モードの場合は、「0枚選択」の状態で選択モードに入る
+            _uiState.update { state ->
+                state.copy(
+                    selectionMode = true,
+                    isSelectionMode = true,
+                    selectedIds = emptySet(),
+                    selectedCount = 0
+                )
+            }
+        }
+    }
+
+    /**
      * 長押しの入り口。
-     * ・すでにちょうど1枚だけ選択されている状態で、別の画像を長押しした場合は「範囲選択」
-     *   (今表示されている並び順で、その1枚と長押しした画像の間をまとめて選択する)。
-     * ・それ以外(未選択、または既に2枚以上選択中)は、今まで通り新しく1枚だけ選択を開始する。
+     * ※1の改修により、画像長押しでの「選択モード開始」は廃止されました。
+     * ここは次のステップ【※2】の「★拡張表示時のグループ全体表示」で使用します。
      */
     fun handleLongPress(imageId: Long) {
-        val state = _uiState.value
-        if (state.selectedIds.size == 1 && imageId !in state.selectedIds) {
-            selectRange(state.selectedIds.first(), imageId)
-        } else {
-            startSelection(imageId)
-        }
+        // 直近タップ画像としてフォーカスを更新
+        setFocusedImage(imageId)
+        // ※2（拡張表示時のグループ表示）の実装時にここに処理を追加します
     }
 
     /** 現在の表示順(entries)を基準に、anchorIdとtargetIdの間にある画像をまとめて選択する。 */

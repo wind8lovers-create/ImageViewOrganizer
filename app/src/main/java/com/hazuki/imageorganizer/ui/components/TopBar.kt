@@ -309,11 +309,13 @@ fun OrganizerTopBar(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // -ラベル名- （独立したタップ可能ボタン：将来の機能保留用）
+                // -ラベル名- （タップで選択モードON/OFFを切り替えるボタン）
+                // 選択モード中は、隣のカテゴリータグアイコンと同じ鮮やかなピンク色（#FF67C6）に変化します
                 val labelText = if (displayLabel.isNotBlank()) "-$displayLabel-" else "-未選択-"
+                val labelColor = if (isSelectionMode) Color(0xFFFF67C6) else Color.White
                 Text(
                     text = labelText,
-                    color = Color.White,
+                    color = labelColor,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier

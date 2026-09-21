@@ -218,8 +218,9 @@ private fun GridCellContent(
             modifier = Modifier.fillMaxSize()
         )
 
+        // 【※3】選択された画像は光度を40%下げて（黒40%透過オーバーレイ）暗く表示し、選択状態を一目で分かりやすくします
         if (isSelected) {
-            Box(modifier = Modifier.fillMaxSize().background(SelectionOverlay))
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.40f)))
         }
 
         // 選択モード中、他のグループに既に入っている画像を暗く表示(要件定義Q2)

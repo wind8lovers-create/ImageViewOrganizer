@@ -159,6 +159,13 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     /** フォルダ階層の戻り履歴スタック（下層に潜るたびに現在の親フォルダ情報を退避） */
     private val folderBackStack = mutableListOf<NavFolderHistory>()
 
+    /**
+     * 【※1：範囲一括選択用の起点画像ID】
+     * 選択モード中にユーザーが直近でタップして選択した画像のIDを記憶します。
+     * 別の画像を長押しした際、この起点Aから長押し画像Bまでの全画像を一括選択するために使用します。
+     */
+    private var lastSelectedImageId: Long? = null
+
     /** 現在のフォルダを戻り履歴スタックに記録し、戻るボタンを有効化 */
     private fun pushCurrentFolderToBackStack() {
         val currentLabel = _uiState.value.currentFolderLabel
@@ -654,6 +661,33 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
         val currentState = _uiState.value
 
+        // 【※2：下層フォルダ移動中グループ表示からの安全脱出】
+        // 下層フォルダへ一時的に潜っていた最中に「★」ボタンで拡張選択が解除された場合、
+        // 親フォルダのスタックを取り出して親フォルダへ復帰させ、フォルダ名表示も元に戻します
+        if (currentState.isSubFolderGroupMode) {
+            exitSubFolderGroupMode()
+            _uiState.update {
+                it.copy(
+                    extensionSelectionActive = false,
+                    originImageId = null,
+                    hashMatchEnabled = false,
+                    saturationTolerance = 0f,
+                    brightnessTolerance = 0f,
+                    colorPresetStep = 0,
+                    aspectRatioOnly = false,
+                    styleMatchThreshold = 0f,
+                    extensionGroupColors = emptyMap(),
+                    hashProgressText = null,
+                    isGroupComparisonMode = false,
+                    isSubFolderGroupMode = false,
+                    comparisonBackupEntries = null,
+                    comparisonBackupGroupColors = emptyMap()
+                )
+            }
+            applyDisplayList()
+            return
+        }
+
         // ① 追跡対象のターゲット画像を特定
         // 複数選択時はソート順で一番最初に選択されている画像。未選択時はフォーカス中画像、それもなければ起動時の基準画像
         val targetImage = currentState.entries.firstOrNull { it.id in currentState.selectedIds }
@@ -909,7 +943,17 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun toggleSelected(imageId: Long) {
         _uiState.update { state ->
             val newSet = state.selectedIds.toMutableSet()
-            if (!newSet.add(imageId)) newSet.remove(imageId)
+            if (!newSet.add(imageId)) {
+                // 選択を解除した場合
+                newSet.remove(imageId)
+                // 解除した画像が直近選択IDだった場合は、残っている選択画像のいずれか（またはnull）を起点に更新
+                if (lastSelectedImageId == imageId) {
+                    lastSelectedImageId = newSet.lastOrNull()
+                }
+            } else {
+                // 新たに選択した画像を「範囲一括選択の起点A」として記憶
+                lastSelectedImageId = imageId
+            }
             val stillSelecting = newSet.isNotEmpty()
             state.copy(
                 selectedIds = newSet,
@@ -957,6 +1001,8 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * 長押しの入り口。
+     * 【※1】選択モード中の場合：
+     * 直近選択した画像Aから今回長押しした画像Bまでの範囲を一括選択（ソート表示順）します。
      * 【※2＋α】★拡張表示中（ハッシュ比較中）に画像を長押しすると、
      * その画像と同一類似枠に属するすべての画像の所属グループを一括抽出し、
      * グループ名順で枠色分けして比較表示します。
@@ -964,9 +1010,38 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun handleLongPress(imageId: Long) {
         setFocusedImage(imageId)
         val state = _uiState.value
+
+        // 【※1：選択モード中の範囲一括選択】
+        // 選択モードがONの場合、直前に選んだ画像Aから今回長押しした画像Bまでの間を一括選択する
+        if (state.selectionMode) {
+            val anchorId = lastSelectedImageId ?: state.selectedIds.firstOrNull()
+            if (anchorId != null) {
+                // 起点画像Aが存在する場合：A〜Bまでの画像をまとめて選択状態にする
+                selectRange(anchorId = anchorId, targetId = imageId)
+                // 今回長押しした画像Bを次回の範囲選択の新しい起点として更新
+                lastSelectedImageId = imageId
+            } else {
+                // まだ1枚も選択されていない状態で長押しされた場合：長押しされた画像を1枚選択
+                toggleSelected(imageId)
+            }
+            return
+        }
+
         // ★拡張選択中（ハッシュ比較中）かつ、まだグループ比較モードに入っていない場合にグループ比較へ突入
-        if (state.extensionSelectionActive && !state.isGroupComparisonMode) {
-            enterGroupComparisonMode(imageId)
+        if (state.extensionSelectionActive && !state.isGroupComparisonMode && !state.isSubFolderGroupMode) {
+            val targetImage = state.entries.firstOrNull { it.id == imageId }
+            val targetDocId = targetImage?.parentFolderDocId
+            val baseTree = rootTreeUri ?: currentFolderUri
+            val isDifferentSubFolder = state.includeSubFolders && targetDocId != null && targetDocId != currentFolderDocId && baseTree != null
+
+            if (isDifferentSubFolder && targetImage != null) {
+                // 【※2：下層📁ON時の下層画像長押し】
+                // 下層フォルダの画像が長押しされた場合、その下層フォルダへ移動してグループ表示に切り替え
+                enterSubFolderGroupMode(targetImage)
+            } else {
+                // 通常のルートフォルダ（同一フォルダ内）でのグループ比較モード
+                enterGroupComparisonMode(imageId)
+            }
         }
     }
 
@@ -1086,13 +1161,171 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
-     * 【グループ比較モード中のファイル削除・移動に伴うバックアップ整合性同期】
+     * 【※2：下層フォルダへ移動してグループ表示を開始】
+     * 「下層📁ON」の★拡張選択モード中に、下層フォルダに属する画像Cが長押しされた際に呼び出されます。
+     * 1. 現在の★ハッシュ比較一覧とグループ枠色を一時保存（バックアップ）
+     * 2. 親フォルダ情報を履歴スタックに退避（復帰時に元の親に戻れるようにする）
+     * 3. 画像Cが存在する下層フォルダへ移動し、その直下の画像を読み込み
+     * 4. 読み込み完了後、下層フォルダ内で「グループ連番順（枠色別）」でソートして表示
+     * 5. 画像Cを選択＆フォーカス状態にしてその位置へスクロール
+     * 6. メニューバーの「カテゴリーラベル表示」の文字色を #B60500 に変更（isSubFolderGroupMode = true）
+     */
+    private fun enterSubFolderGroupMode(targetImage: ImageItem) {
+        val currentState = _uiState.value
+        val targetDocId = targetImage.parentFolderDocId ?: return
+        val baseTree = rootTreeUri ?: currentFolderUri ?: return
+        val folderName = targetImage.parentFolderName ?: "フォルダ"
+
+        // ① 現在の親フォルダを履歴スタックに記録（復帰時に親フォルダへ戻れるようにする）
+        pushCurrentFolderToBackStack()
+
+        // ② 現在のハッシュ一覧・枠色を一時バックアップし、下層フォルダ移動中フラグをON
+        _uiState.update {
+            it.copy(
+                isSubFolderGroupMode = true,
+                comparisonBackupEntries = currentState.entries,
+                comparisonBackupGroupColors = currentState.extensionGroupColors,
+                comparisonBookmarkIds = setOf(targetImage.id),
+                isLoading = true,
+                isStreaming = true,
+                currentFolderLabel = folderName,
+                folderDetailLabel = buildReadableFullPath(baseTree, targetDocId),
+                folderTotalCount = 0
+            )
+        }
+
+        currentFolderUri = baseTree
+        currentFolderDocId = targetDocId
+
+        // ③ 下層フォルダ直下の画像を読み込み、完了時にグループ連番順表示へ切り替え
+        viewModelScope.launch {
+            try {
+                val fetchedImages = mutableListOf<ImageItem>()
+                repository.loadFromTreeStreaming(
+                    treeUri = baseTree,
+                    includeSubFolders = false, // 下層フォルダ直下の画像のみ読み込む
+                    folderDocId = targetDocId
+                ).collect { progress ->
+                    fetchedImages.clear()
+                    fetchedImages.addAll(progress.images)
+                    onBatchReceived(progress)
+                }
+
+                // 全画像からグループ連番ソートを適用（_nn_mm形式のファイルを枠色分け）
+                val groupSeqImages = sortImageList(fetchedImages, SortOption.GROUP_SEQ_ASC)
+                val finalEntries = groupSeqImages.ifEmpty { sortImageList(fetchedImages, SortOption.NAME_ASC) }
+
+                // グループ枠線の色分け（A〜Z）を計算
+                val groupColors = mutableMapOf<Long, Char>()
+                val groupKeyIndexMap = mutableMapOf<String, Int>()
+                for (img in finalEntries) {
+                    val info = RenameMoveHelper.parseRenamedFileInfo(img.displayName) ?: continue
+                    val groupIdx = groupKeyIndexMap.getOrPut(info.groupKey) { groupKeyIndexMap.size }
+                    val colorCategory = ('A'.code + (groupIdx % 26)).toChar()
+                    groupColors[img.id] = colorCategory
+                }
+
+                _uiState.update { s ->
+                    s.copy(
+                        isStreaming = false,
+                        isLoading = false,
+                        entries = finalEntries,
+                        extensionGroupColors = groupColors,
+                        // 画像Cを選択＆フォーカス状態にして強調
+                        focusedImageId = targetImage.id,
+                        selectedIds = setOf(targetImage.id),
+                        selectedCount = 1,
+                        selectionMode = true,
+                        isSelectionMode = true,
+                        currentJumpIndex = 1,
+                        matchedCount = finalEntries.size,
+                        snackbarMessage = "「$folderName」へ移動しグループ表示に切り替えました"
+                    )
+                }
+
+                // 画像Cの位置へスクロール＆しおりカーソルを設定
+                val targetIndex = finalEntries.indexOfFirst { it.id == targetImage.id }
+                if (targetIndex >= 0) {
+                    jumpCursorIndex = targetIndex
+                    requestScroll(targetIndex)
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        isStreaming = false,
+                        snackbarMessage = "下層フォルダの読み込みに失敗しました: ${e.localizedMessage}"
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * 【※2：下層フォルダのグループ表示から元の★ハッシュ一覧へ復帰】
+     * メニューバーのカテゴリーラベル長押しによって呼び出されます。
+     * 親フォルダへ戻り、バックアップしていた★ハッシュ一覧・枠色を完全に復元します。
+     * 下層フォルダ作業中に削除・移動されたファイルは、syncBackupAfterFileRemoval で自動同期済みのため安全です。
+     */
+    fun exitSubFolderGroupMode() {
+        val currentState = _uiState.value
+        if (!currentState.isSubFolderGroupMode) return
+
+        if (folderBackStack.isEmpty()) {
+            _uiState.update { it.copy(isSubFolderGroupMode = false) }
+            return
+        }
+
+        // スタックから直前の親フォルダ情報を取り出す
+        val parent = folderBackStack.removeAt(folderBackStack.lastIndex)
+        val baseTree = parent.uri ?: rootTreeUri ?: currentFolderUri
+
+        currentFolderUri = parent.uri
+        currentFolderDocId = parent.docId
+        currentZipDir = null
+
+        val backupEntries = currentState.comparisonBackupEntries ?: emptyList()
+        val backupColors = currentState.comparisonBackupGroupColors
+
+        // しおり位置をリセット
+        jumpCursorIndex = -1
+
+        // 【全画像リストの同期】
+        // 下層フォルダ読み込み時に書き換わっていた allImages を親フォルダの画像一覧へ完全同期。
+        // これにより、その後のソート変更などで下層フォルダの画像が混ざる不整合を防ぎます。
+        allImages = backupEntries
+
+        _uiState.update {
+            it.copy(
+                canNavigateUp = folderBackStack.isNotEmpty(),
+                isSubFolderGroupMode = false,
+                comparisonBackupEntries = null,
+                comparisonBackupGroupColors = emptyMap(),
+                comparisonBookmarkIds = emptySet(),
+                // フォルダ名と詳細パスを確実に親フォルダのものへ戻す
+                currentFolderLabel = parent.label,
+                folderDetailLabel = baseTree?.let { buildReadableFullPath(it, parent.docId) } ?: parent.label,
+                entries = backupEntries,
+                extensionGroupColors = backupColors,
+                matchedCount = backupEntries.size,
+                selectedIds = emptySet(),
+                selectedCount = 0,
+                selectionMode = false,
+                isSelectionMode = false,
+                currentJumpIndex = null,
+                snackbarMessage = "元のハッシュ比較一覧に復帰しました"
+            )
+        }
+    }
+
+    /**
+     * 【グループ比較モード・下層グループ表示中のファイル削除・移動に伴うバックアップ整合性同期】
      * ファイルが削除または別フォルダへ移動された際、
-     * グループ比較モードで裏に保持している「ハッシュ比較バックアップ一覧」からも
-     * 該当画像を取り除き、復帰時に消えた画像が表示されてしまう不整合を防ぎます。
+     * 裏に保持している「ハッシュ比較バックアップ一覧」からも該当画像を取り除き、
+     * 復帰時に消えた画像が表示されてしまう不整合を完全に防ぎます。
      */
     fun syncBackupAfterFileRemoval(removedIds: Set<Long>) {
-        if (removedIds.isEmpty() || !_uiState.value.isGroupComparisonMode) return
+        if (removedIds.isEmpty() || (!_uiState.value.isGroupComparisonMode && !_uiState.value.isSubFolderGroupMode)) return
         _uiState.update { s ->
             val updatedBackup = s.comparisonBackupEntries?.filter { it.id !in removedIds }
             val updatedColors = s.comparisonBackupGroupColors.filterKeys { it !in removedIds }
@@ -1107,10 +1340,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * 【カテゴリーラベル長押し時の処理】
-     * グループ比較モード中なら、ハッシュ比較一覧へ復帰します。
+     * 下層グループ表示中、またはグループ比較モード中なら、ハッシュ比較一覧へ復帰します。
      */
     fun handleLabelLongClick() {
-        if (_uiState.value.isGroupComparisonMode) {
+        if (_uiState.value.isSubFolderGroupMode) {
+            // 【※2】下層フォルダ移動中の場合：元の親フォルダ・ハッシュ比較一覧へ復帰
+            exitSubFolderGroupMode()
+        } else if (_uiState.value.isGroupComparisonMode) {
+            // 【※2＋α】同一フォルダ内のグループ比較の場合：ハッシュ比較一覧へ復帰
             exitGroupComparisonMode()
         }
     }
@@ -1125,15 +1362,21 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             startSelection(targetId)
             return
         }
+        // ソート表示順で起点と終点の間のインデックス範囲を抽出
         val range = minOf(anchorIndex, targetIndex)..maxOf(anchorIndex, targetIndex)
         val rangeIds = range.map { entries[it].id }.toSet()
-        _uiState.update { it.copy(
-            selectionMode = true,
-            selectedIds = rangeIds,
-            // ---- 新しい選択状態も更新（ラベルは現在の選択を維持する） ----
-            isSelectionMode = true,
-            selectedCount = rangeIds.size
-        ) }
+        _uiState.update { currentState ->
+            // 既存の選択状態を保持しつつ、範囲内の画像を追加合流する
+            val newSelectedIds = currentState.selectedIds + rangeIds
+            currentState.copy(
+                selectionMode = true,
+                selectedIds = newSelectedIds,
+                // ---- 新しい選択状態も更新（ラベルは現在の選択を維持する） ----
+                isSelectionMode = true,
+                selectedCount = newSelectedIds.size,
+                focusedImageId = targetId
+            )
+        }
     }
 
     /**
@@ -1142,6 +1385,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      * 選択モードは終了させず、選択した画像だけをすべて外して「0枚選択」の状態に戻します。
      */
     fun clearSelectionOnly() {
+        lastSelectedImageId = null // 起点もクリア
         _uiState.update {
             it.copy(
                 selectedIds = emptySet(),
@@ -1153,6 +1397,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     fun clearSelection() {
+        lastSelectedImageId = null // 起点もクリア
         val wasAddMode = _uiState.value.addModeActive
         _uiState.update {
             it.copy(
@@ -2046,9 +2291,12 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                             // 【親フォルダ履歴退避】移動する前に、現在の親フォルダ情報をスタックに積む
                             pushCurrentFolderToBackStack()
                             // マスターキー(baseTree)を維持し、サブフォルダのDocIdを指定して開く（権限エラーを完全防止）
+                            // 【重要】下層フォルダへ潜る移動の際は、大元の親フォルダ（「未整理」など）の履歴を
+                            // 上書きしてしまわないように、必ず recordHistory = false を指定します。
                             openFolder(
                                 treeUri = baseTree,
                                 label = label,
+                                recordHistory = false,
                                 clearBackStack = false,
                                 targetDocId = subDocId
                             )
@@ -2081,6 +2329,12 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      */
     fun navigateUpFolder() {
         if (folderBackStack.isEmpty()) return
+
+        // 【※2】下層フォルダ移動中グループ表示中の場合、exitSubFolderGroupMode で安全に親フォルダとハッシュ一覧へ復帰
+        if (_uiState.value.isSubFolderGroupMode) {
+            exitSubFolderGroupMode()
+            return
+        }
 
         // スタックの末尾（直前の親フォルダ）を取り出す
         val parent = folderBackStack.removeAt(folderBackStack.lastIndex)
@@ -2559,10 +2813,12 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                     val baseTree = rootTreeUri ?: treeUri
                     if (folderRenamed && baseTree != null) {
                         // フォルダ名が変わった場合：起点マスターキーの権限を維持したまま新DocIdで開き直す（権限エラーゼロ）
+                        // 【履歴保護】現在地がルート（親）フォルダの場合のみ履歴を更新し、下層フォルダの場合は履歴を上書きしない
+                        val isRootFolder = (currentFolderDocId == null || currentFolderDocId == android.provider.DocumentsContract.getTreeDocumentId(baseTree))
                         openFolder(
                             treeUri = baseTree,
                             label = sanitizedNewLabel,
-                            recordHistory = true,
+                            recordHistory = isRootFolder,
                             clearBackStack = false,
                             targetDocId = currentFolderDocId
                         )
@@ -2588,96 +2844,126 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      * 
      * @param destTreeUri コピー先のフォルダUri（SAF）
      */
-    fun executeCopySelectedTo(destTreeUri: Uri) {
-        val targets = selectedImages()
-        if (targets.isEmpty()) {
-            _uiState.update { it.copy(snackbarMessage = "コピー対象の画像が選択されていません") }
-            return
-        }
-
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val resolver = getApplication<android.app.Application>().contentResolver
-            try {
-                val destDocId = android.provider.DocumentsContract.getTreeDocumentId(destTreeUri)
-                val destFolderUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(destTreeUri, destDocId)
-                var successCount = 0
-
-                for (item in targets) {
-                    try {
-                        val newDocUri = android.provider.DocumentsContract.createDocument(
-                            resolver, destFolderUri, item.mimeType, item.displayName
-                        )
-                        if (newDocUri != null) {
-                            resolver.openInputStream(item.uri)?.use { input ->
-                                resolver.openOutputStream(newDocUri)?.use { output ->
-                                    input.copyTo(output)
-                                }
-                            }
-                            successCount++
-                        }
-                    } catch (e: Exception) {
-                        // 個別の失敗はスキップして継続
-                    }
-                }
-
-                _uiState.update { it.copy(snackbarMessage = "${successCount}枚の画像をコピーしました") }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(snackbarMessage = "コピー中にエラーが発生しました: ${e.localizedMessage}") }
-            }
-        }
-    }
-
     /**
-     * 【選択画像の移動】
-     * ユーザーが選択した別フォルダへ、選択中の画像を移動します。
-     * コピー完了後に元ファイルを削除し、画面を最新状態に更新します。
-     * 
-     * @param destTreeUri 移動先のフォルダUri（SAF）
+     * 【※3：選択画像を親フォルダへ移動（安全第一のCopy-then-Delete方式）】
+     * 「連番→📁[ラベル名]」の移動処理と同様に、
+     * 1. 移動先（親フォルダ）へ全ファイルを先にコピー作成
+     * 2. 1枚でも失敗した場合は作成した新ファイルを全て削除（ロールバック）して中断
+     * 3. 全件のコピーが完全に成功した場合のみ、現在のフォルダから元ファイルを削除
+     * という手順を踏むことで、データの消失を絶対に防ぐ安全設計で移動を行います。
      */
-    fun executeMoveSelectedTo(destTreeUri: Uri) {
+    fun executeMoveSelectedToParent() {
         val targets = selectedImages()
         if (targets.isEmpty()) {
             _uiState.update { it.copy(snackbarMessage = "移動対象の画像が選択されていません") }
             return
         }
 
+        // 親フォルダに戻れる状態（folderBackStackに親情報がある）でなければ実行しない
+        if (folderBackStack.isEmpty()) {
+            _uiState.update { it.copy(snackbarMessage = "親フォルダの情報が見つかりません") }
+            return
+        }
+
+        // スタックの一番上（直前の親フォルダ情報）を参照（取り出しはせず情報だけ取得）
+        val parent = folderBackStack.lastOrNull()
+        val baseTree = parent?.uri ?: rootTreeUri ?: currentFolderUri
+        if (baseTree == null) {
+            _uiState.update { it.copy(snackbarMessage = "親フォルダへのアクセス権限情報が見つかりません") }
+            return
+        }
+
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val resolver = getApplication<android.app.Application>().contentResolver
             try {
-                val destDocId = android.provider.DocumentsContract.getTreeDocumentId(destTreeUri)
-                val destFolderUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(destTreeUri, destDocId)
-                var successCount = 0
+                // 親フォルダのDocumentIdから親フォルダのDocumentUriを組み立て
+                val parentDocId = parent?.docId ?: android.provider.DocumentsContract.getTreeDocumentId(baseTree)
+                val parentFolderDocUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(baseTree, parentDocId)
 
+                // 1. 安全第一のコピー処理（全件成功するまで元ファイルは消さない）
+                val copiedNewUris = mutableListOf<android.net.Uri>()
+                var failedIndex = -1
+
+                for ((index, item) in targets.withIndex()) {
+                    // 親フォルダ内に同じファイル名で新規ファイルを作成
+                    val newDocUri = try {
+                        android.provider.DocumentsContract.createDocument(
+                            resolver, parentFolderDocUri, item.mimeType, item.displayName
+                        )
+                    } catch (e: Exception) {
+                        null
+                    }
+
+                    if (newDocUri == null) {
+                        failedIndex = index + 1
+                        break
+                    }
+
+                    // データを新しいファイルへストリームコピー
+                    val copyOk = try {
+                        resolver.openInputStream(item.uri)?.use { input ->
+                            resolver.openOutputStream(newDocUri)?.use { output ->
+                                input.copyTo(output)
+                                true
+                            }
+                        } ?: false
+                    } catch (e: Exception) {
+                        false
+                    }
+
+                    if (!copyOk) {
+                        // コピー失敗時は不完全な新ファイルを削除
+                        try {
+                            android.provider.DocumentsContract.deleteDocument(resolver, newDocUri)
+                        } catch (e: Exception) {
+                            // 無視
+                        }
+                        failedIndex = index + 1
+                        break
+                    }
+
+                    copiedNewUris.add(newDocUri)
+                }
+
+                // 2. 【ロールバック処理】途中で1枚でも失敗した場合は作成した新ファイルを全て削除して処理を中断
+                if (failedIndex != -1) {
+                    for (uri in copiedNewUris) {
+                        try {
+                            android.provider.DocumentsContract.deleteDocument(resolver, uri)
+                        } catch (e: Exception) {
+                            // 無視
+                        }
+                    }
+                    _uiState.update {
+                        it.copy(snackbarMessage = "エラー: ${targets.size}枚中 ${failedIndex}枚目の移動に失敗したため処理を中断し、元の状態に戻しました")
+                    }
+                    return@launch
+                }
+
+                // 3. 【全件成功時のみ元ファイルを削除】
+                var successCount = 0
                 for (item in targets) {
                     try {
-                        val newDocUri = android.provider.DocumentsContract.createDocument(
-                            resolver, destFolderUri, item.mimeType, item.displayName
-                        )
-                        if (newDocUri != null) {
-                            var copyOk = false
-                            resolver.openInputStream(item.uri)?.use { input ->
-                                resolver.openOutputStream(newDocUri)?.use { output ->
-                                    input.copyTo(output)
-                                    copyOk = true
-                                }
-                            }
-                            // コピーに成功したら元ファイルを削除
-                            if (copyOk) {
-                                android.provider.DocumentsContract.deleteDocument(resolver, item.uri)
-                                successCount++
-                            }
-                        }
+                        android.provider.DocumentsContract.deleteDocument(resolver, item.uri)
+                        successCount++
                     } catch (e: Exception) {
-                        // 個別の失敗はスキップして継続
+                        // 個別の削除失敗があっても継続
                     }
                 }
 
+                // 4. 移動完了後の後片付け：グループ登録から除外し、選択解除して一覧を最新化
+                syncBackupAfterFileRemoval(targets.map { it.id }.toSet())
                 removeImagesFromAllGroups(targets.map { it.id })
                 clearSelection()
-                _uiState.update { it.copy(snackbarMessage = "${successCount}枚の画像を移動しました") }
+                _uiState.update {
+                    it.copy(snackbarMessage = "${successCount}枚の画像を親フォルダへ移動しました")
+                }
+                // 現在のフォルダを再読み込みして移動したファイルを画面から反映
                 reloadCurrentFolder(0)
             } catch (e: Exception) {
-                _uiState.update { it.copy(snackbarMessage = "移動中にエラーが発生しました: ${e.localizedMessage}") }
+                _uiState.update {
+                    it.copy(snackbarMessage = "親フォルダへの移動中にエラーが発生しました: ${e.localizedMessage}")
+                }
             }
         }
     }

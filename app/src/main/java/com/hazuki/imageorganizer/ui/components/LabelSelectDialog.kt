@@ -3,6 +3,7 @@ package com.hazuki.imageorganizer.ui.components
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -64,19 +65,34 @@ fun LabelSelectDialog(
     // =====================================
     
     Box {
-        // ラベル選択ボタン（トリガー：タップでラベル一覧ドロップダウンを表示）
-        Box(
+        // ラベル選択ボタン（[ 🏷️ →📁 ]）
+        Row(
             modifier = modifier
                 .clickable { showMenu = !showMenu }
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            contentAlignment = Alignment.Center
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
         ) {
+            Text(
+                text = "[",
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
             Icon(
                 imageVector = Icons.Default.Label,
                 contentDescription = "ラベル選択",
-                // 【アイコンカラー変更】指定色 #FF67C6（鮮やかなピンク）を適用して視認性を向上
+                // 【アイコンカラー】指定色 #FF67C6（鮮やかなピンク）
                 tint = Color(0xFFFF67C6),
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier
+                    .padding(horizontal = 1.dp)
+                    .size(16.dp)
+            )
+            Text(
+                text = "→📁]",
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
             )
         }
         

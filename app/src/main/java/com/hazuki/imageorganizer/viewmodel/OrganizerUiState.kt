@@ -93,6 +93,7 @@ data class OrganizerUiState(
     
     // ---- 【※2＋α】拡張選択・グループ比較表示機能 ----
     val isGroupComparisonMode: Boolean = false, // グループ比較モード中かどうか（上部ラベルがライトグリーン #4FFF94 に変化）
+    val isSubFolderGroupMode: Boolean = false,  // 【※2】下層📁ON時に下層フォルダへ移動してグループ表示中かどうか（上部ラベルが赤色 #B60500 に変化）
     val comparisonBackupEntries: List<ImageItem>? = null, // 比較前のハッシュ一覧バックアップ（長押し復帰時に一瞬で戻す用）
     val comparisonBackupGroupColors: Map<Long, Char> = emptyMap(), // 比較前の枠色マップバックアップ
     val comparisonBookmarkIds: Set<Long> = emptySet(), // 【※2＋α】記憶した類似画像ID（選択が0枚になってもこの画像たちにしおりジャンプ可能）

@@ -106,29 +106,6 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
         }
     }
 
-    // コピーまたは移動のどちらを待機しているかを保持する状態（"COPY" または "MOVE"）
-    var pendingTransferMode by remember { mutableStateOf<String?>(null) }
-
-    // コピー・移動用の保存先フォルダを選択するランチャー
-    val transferFolderPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                )
-            } catch (e: SecurityException) {
-                // 一部ストレージで永続権限が取れない場合でも現在の操作は続行
-            }
-            when (pendingTransferMode) {
-                "COPY" -> viewModel.executeCopySelectedTo(uri)
-                "MOVE" -> viewModel.executeMoveSelectedTo(uri)
-            }
-            pendingTransferMode = null
-        }
-    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -244,6 +221,7 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     },
                     displayLabel = state.currentSelectedLabel,
                     isGroupComparisonMode = state.isGroupComparisonMode,
+                    isSubFolderGroupMode = state.isSubFolderGroupMode, // 【※2】下層フォルダ移動中グループ表示フラグ
                     // 【カテゴリーラベルタップによる選択モードON/OFF切り替え】
                     onLabelSelectClick = { viewModel.toggleSelectionMode() },
                     // 【カテゴリーラベル長押しによるグループ比較解除・ハッシュ一覧復帰】
@@ -286,15 +264,9 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                         // 例:「01犬_00_00.jpg」のように同じフォルダ内で名前を変更
                         viewModel.executeRenameOnly(state.currentSelectedLabel)
                     },
-                    onCopyRequested = {
-                        // 【コピー】保存先フォルダ選択ピッカーを開き、選んだフォルダへ画像をコピー
-                        pendingTransferMode = "COPY"
-                        transferFolderPickerLauncher.launch(null)
-                    },
-                    onMoveRequested = {
-                        // 【移動】移動先フォルダ選択ピッカーを開き、選んだフォルダへ画像を移動
-                        pendingTransferMode = "MOVE"
-                        transferFolderPickerLauncher.launch(null)
+                    // 【※3】親フォルダへ移動（安全第一のCopy-then-Delete方式で実行）
+                    onMoveToParentRequested = {
+                        viewModel.executeMoveSelectedToParent()
                     },
                     onDeleteConfirmed = {
                         // 【削除】選択された画像を削除（確認ダイアログで「削除する」が押された後に実行）

@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.GridView
@@ -142,6 +143,7 @@ fun OrganizerTopBar(
     // ---- ラベル関連（新規） ----
     displayLabel: String = "",
     isGroupComparisonMode: Boolean = false, // 【※2＋α】グループ比較モード中かどうか
+    isSubFolderGroupMode: Boolean = false,  // 【※2】下層フォルダ移動グループ表示中かどうか（赤字 #B60500）
     onLabelSelectClick: () -> Unit = {},
     onLabelSelectLongClick: () -> Unit = {}, // 【※2＋α】グループ比較からハッシュ一覧への復帰長押し
     onLabelSelected: (String) -> Unit = {},  // ラベル選択ダイアログからの長押し選択結果を受け取るコールバック
@@ -157,8 +159,8 @@ fun OrganizerTopBar(
     onClearSelection: () -> Unit = {},
     onRenameMove: () -> Unit = {},
     onRenameOnly: () -> Unit = {},
-    onCopyRequested: () -> Unit = {},
-    onMoveRequested: () -> Unit = {},
+    // 【※3】従来の「コピー」は削除、「移動」は「親フォルダへ移動」に変更
+    onMoveToParentRequested: () -> Unit = {},
     onDeleteConfirmed: () -> Unit = {},
     onRenameGroupLabel: () -> Unit = {},
 
@@ -314,9 +316,10 @@ fun OrganizerTopBar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // -ラベル名- （タップで選択モードON/OFF、長押しでグループ比較解除）
-                // 通常時: 白 / 選択モード中: ピンク（#FF67C6） / グループ比較中: ライトグリーン（#4FFF94）
+                // 通常時: 白 / 選択モード中: ピンク（#FF67C6） / グループ比較中: ライトグリーン（#4FFF94） / 下層フォルダ移動中: 赤（#B60500）
                 val labelText = if (displayLabel.isNotBlank()) "-$displayLabel-" else "-未選択-"
                 val labelColor = when {
+                    isSubFolderGroupMode -> Color(0xFFB60500)  // 【※2】下層フォルダ移動中（はづきさんご指定の深赤色: #B60500）
                     isGroupComparisonMode -> Color(0xFF4FFF94) // 【※2＋α】グループ比較表示中
                     isSelectionMode -> Color(0xFFFF67C6)       // 【※1】選択モード中
                     else -> Color.White                        // 通常時
@@ -339,11 +342,11 @@ fun OrganizerTopBar(
                     SelectionMenuButton(
                         selectedCount = selectedCount,
                         currentLabel = currentLabel,
+                        canNavigateUp = canNavigateUp, // 下層フォルダにいるかどうかの判定を渡す
                         onClearSelection = onClearSelection,
                         onRenameMove = onRenameMove,
                         onRenameOnly = onRenameOnly,
-                        onCopyRequested = onCopyRequested,
-                        onMoveRequested = onMoveRequested,
+                        onMoveToParent = onMoveToParentRequested,
                         onDeleteConfirmed = onDeleteConfirmed,
                         onRenameGroupLabel = onRenameGroupLabel
                     )
@@ -362,14 +365,20 @@ fun OrganizerTopBar(
                         onNavigateUp = onNavigateUp
                     )
                 } else {
-                    // ラベルが読み込まれていない場合は、ボタンのみ表示（非活性）
-                    TooltipIconButton(
-                        icon = Icons.Default.Label,
-                        tooltip = "ラベル選択（未読込）",
-                        onClick = {},
-                        contentDescription = "ラベル選択",
-                        isEnabled = false
-                    )
+                    // ラベルが読み込まれていない場合は、ボタンのみ表示（非活性・薄いグレー）
+                    Row(
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("[", color = Color.Gray, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Icon(
+                            imageVector = Icons.Default.Label,
+                            contentDescription = "ラベル選択（未読込）",
+                            tint = Color.Gray,
+                            modifier = Modifier.padding(horizontal = 1.dp).size(16.dp)
+                        )
+                        Text("→📁]", color = Color.Gray, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
 
@@ -383,23 +392,53 @@ fun OrganizerTopBar(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // しおり（「選択へ」機能）
+                // しおり（「選択へ」機能） [ 🔖 3/5⤴ ]
                 // 手動選択がある場合、またはグループ比較中で記憶画像がある場合に有効化
                 val effectiveCount = if (selectedCount > 0) selectedCount else if (isGroupComparisonMode) comparisonBookmarkCount else 0
                 val hasSelection = effectiveCount > 0
-                val jumpTooltip = if (hasSelection) {
-                    if (currentJumpIndex != null) "次のジャンプへ (${currentJumpIndex}/${effectiveCount})" else "ジャンプ (全${effectiveCount}枚)"
+                val bookmarkColor = if (hasSelection) Color.White else Color.Gray.copy(alpha = 0.5f)
+
+                // 巡回カウント表示文字列（未ジャンプ時は 0/N、ジャンプ中は 現在位置/N）
+                // 選択が0枚の時は文字を出さず [ 🔖 ⤴ ] のみ表示
+                val countText = if (hasSelection) {
+                    val currentPos = currentJumpIndex ?: 0
+                    "$currentPos/$effectiveCount"
                 } else {
-                    "選択がありません"
+                    ""
                 }
-                TooltipIconButton(
-                    icon = Icons.Default.Bookmark,
-                    tooltip = jumpTooltip,
-                    onClick = onJumpToSelected,
-                    onLongClick = onJumpToSelectedLongClick,
-                    isEnabled = hasSelection,
-                    contentDescription = "しおり（選択へジャンプ）"
-                )
+
+                Row(
+                    modifier = Modifier
+                        .combinedClickable(
+                            enabled = hasSelection,
+                            onClick = onJumpToSelected,
+                            onLongClick = onJumpToSelectedLongClick
+                        )
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "[",
+                        color = bookmarkColor,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Icon(
+                        imageVector = Icons.Default.Bookmark,
+                        contentDescription = "しおり（選択へジャンプ）",
+                        tint = bookmarkColor,
+                        modifier = Modifier
+                            .padding(horizontal = 1.dp)
+                            .size(16.dp)
+                    )
+                    Text(
+                        text = "${countText}⤴]",
+                        color = bookmarkColor,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
 
                 // ▶ スライドショー
                 TooltipIconButton(
@@ -508,11 +547,11 @@ fun TooltipIconButton(
 fun SelectionMenuButton(
     selectedCount: Int,
     currentLabel: String,
+    canNavigateUp: Boolean = false, // 【※3】現在下層フォルダにいるかどうか（親へ移動の有効/無効判定に使用）
     onClearSelection: () -> Unit,
     onRenameMove: () -> Unit,
     onRenameOnly: () -> Unit,
-    onCopyRequested: () -> Unit,
-    onMoveRequested: () -> Unit,
+    onMoveToParent: () -> Unit,      // 【※3】親フォルダへ移動するコールバック
     onDeleteConfirmed: () -> Unit,
     onRenameGroupLabel: () -> Unit
 ) {
@@ -552,22 +591,34 @@ fun SelectionMenuButton(
                     pendingAction = "renameOnly"
                 }
             )
+            // 【※3：📁親フォルダへ移動】
+            // 下層フォルダ内にいて（canNavigateUp == true）、かつ1枚以上画像が選択されている場合のみ有効。
+            // ルートフォルダにいる時などはグレーアウト（非活性）にして誤操作を防ぎます。
+            val canMoveToParent = canNavigateUp && selectedCount > 0
             DropdownMenuItem(
-                text = { Text("コピー") },
+                text = {
+                    Text(
+                        "📁親フォルダへ移動",
+                        color = if (canMoveToParent) Color.Unspecified else Color.Gray.copy(alpha = 0.5f)
+                    )
+                },
+                enabled = canMoveToParent,
                 onClick = {
                     showMenu = false
-                    onCopyRequested()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("移動") },
-                onClick = {
-                    showMenu = false
-                    onMoveRequested()
+                    pendingAction = "moveToParent"
                 }
             )
             DropdownMenuItem(
                 text = { Text("削除", color = MaterialTheme.colorScheme.error) },
+                // 削除文字の前にゴミ箱アイコンを表示
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "削除",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp)
+                    )
+                },
                 onClick = {
                     showMenu = false
                     pendingAction = "delete"
@@ -595,6 +646,11 @@ fun SelectionMenuButton(
                     "${selectedCount}枚を「${currentLabel}_連番」の形式にリネームします（移動はしません）。よろしいですか？",
                     "実行"
                 )
+                "moveToParent" -> Triple(
+                    "親フォルダへ移動の確認",
+                    "${selectedCount}枚の画像を親フォルダへ移動します。よろしいですか？",
+                    "移動する"
+                )
                 "delete" -> Triple(
                     "削除の確認",
                     "${selectedCount}枚を削除します。この操作は元に戻せません。よろしいですか？",
@@ -618,6 +674,7 @@ fun SelectionMenuButton(
                         when (action) {
                             "renameMove" -> onRenameMove()
                             "renameOnly" -> onRenameOnly()
+                            "moveToParent" -> onMoveToParent()
                             "delete" -> onDeleteConfirmed()
                             "renameGroup" -> onRenameGroupLabel()
                         }

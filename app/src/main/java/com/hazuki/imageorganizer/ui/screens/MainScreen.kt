@@ -243,8 +243,11 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                         viewModel.setSortOption(selectedSort)
                     },
                     displayLabel = state.currentSelectedLabel,
+                    isGroupComparisonMode = state.isGroupComparisonMode,
                     // 【カテゴリーラベルタップによる選択モードON/OFF切り替え】
                     onLabelSelectClick = { viewModel.toggleSelectionMode() },
+                    // 【カテゴリーラベル長押しによるグループ比較解除・ハッシュ一覧復帰】
+                    onLabelSelectLongClick = { viewModel.handleLabelLongClick() },
                     // 【ラベル選択ダイアログ実装】
                     // タグアイコン（Label）をタップでドロップダウンメニュー表示
                     // ・通常タップ: ViewModel に通知して現在選択中ラベルを更新
@@ -266,9 +269,11 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     currentLabel = state.currentSelectedLabel,
                     labels = state.labels,
                     isSelectionMode = state.isSelectionMode,
-                    onClearSelection = { viewModel.clearSelection() },
+                    // 【〇枚選択ボタン長押し】選択画像のみ全解除（選択モードは維持）
+                    onClearSelection = { viewModel.clearSelectionOnly() },
                     // ---- しおり機能 ----
                     currentJumpIndex = state.currentJumpIndex,
+                    comparisonBookmarkCount = state.comparisonBookmarkIds.size,
                     onJumpToSelected = { viewModel.jumpToNextSelected() },
                     onJumpToSelectedLongClick = { viewModel.jumpToFirstSelected() },
                     onRenameMove = {

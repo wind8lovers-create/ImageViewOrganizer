@@ -447,6 +447,31 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         val sorted = sortedImages(state.sortOption)
 
         if (state.extensionSelectionActive) {
+            // 【グループ比較モード中】フォルダ再読込後もハッシュ再計算に飛ばず、グループ連番一覧を維持する
+            if (state.isGroupComparisonMode) {
+                val groupSeqImages = sortImageList(allImages, SortOption.GROUP_SEQ_ASC)
+                val missingSimilarImages = allImages.filter { it.id in state.comparisonBookmarkIds && groupSeqImages.none { g -> g.id == it.id } }
+                val groupEntries = (groupSeqImages + missingSimilarImages).distinctBy { it.id }.ifEmpty {
+                    sortImageList(allImages, SortOption.NAME_ASC)
+                }
+                val groupColors = mutableMapOf<Long, Char>()
+                val groupKeyIndexMap = mutableMapOf<String, Int>()
+                for (img in groupEntries) {
+                    val info = RenameMoveHelper.parseRenamedFileInfo(img.displayName) ?: continue
+                    val groupIdx = groupKeyIndexMap.getOrPut(info.groupKey) { groupKeyIndexMap.size }
+                    val colorCategory = ('A'.code + (groupIdx % 26)).toChar()
+                    groupColors[img.id] = colorCategory
+                }
+                _uiState.update {
+                    it.copy(
+                        entries = groupEntries,
+                        extensionGroupColors = groupColors,
+                        matchedCount = groupEntries.size
+                    )
+                }
+                return
+            }
+
             applyExtensionSelectionFilter(sorted, state)
             return
         }
@@ -648,7 +673,11 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 aspectRatioOnly = false,
                 styleMatchThreshold = 0f,
                 extensionGroupColors = emptyMap(),
-                hashProgressText = null
+                hashProgressText = null,
+                // グループ比較モードも安全に解除
+                isGroupComparisonMode = false,
+                comparisonBackupEntries = null,
+                comparisonBackupGroupColors = emptyMap()
             )
         }
 
@@ -928,13 +957,162 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * 長押しの入り口。
-     * ※1の改修により、画像長押しでの「選択モード開始」は廃止されました。
-     * ここは次のステップ【※2】の「★拡張表示時のグループ全体表示」で使用します。
+     * 【※2＋α】★拡張表示中（ハッシュ比較中）に画像を長押しすると、
+     * その画像と同一類似枠に属するすべての画像の所属グループを一括抽出し、
+     * グループ名順で枠色分けして比較表示します。
      */
     fun handleLongPress(imageId: Long) {
-        // 直近タップ画像としてフォーカスを更新
         setFocusedImage(imageId)
-        // ※2（拡張表示時のグループ表示）の実装時にここに処理を追加します
+        val state = _uiState.value
+        // ★拡張選択中（ハッシュ比較中）かつ、まだグループ比較モードに入っていない場合にグループ比較へ突入
+        if (state.extensionSelectionActive && !state.isGroupComparisonMode) {
+            enterGroupComparisonMode(imageId)
+        }
+    }
+
+    /**
+     * 【※2＋α：グループ比較モードの開始（しおりジャンプ連携）】
+     * 長押しされた画像が含まれる「類似画像枠」の全画像を特定して選択状態にし、
+     * グループ連番表示に切り替えて、しおりボタンでそれら画像間を順次ジャンプできるようにします。
+     */
+    private fun enterGroupComparisonMode(targetImageId: Long) {
+        val currentState = _uiState.value
+        if (!currentState.extensionSelectionActive || currentState.isGroupComparisonMode) return
+
+        val targetIndex = currentState.entries.indexOfFirst { it.id == targetImageId }
+        if (targetIndex < 0) return
+
+        // ① 長押しされた画像を中心にして、前後に同じ枠色が連続している「同一類似ブロック」の仲間を確実に抽出
+        val targetColor = currentState.extensionGroupColors[targetImageId]
+        val similarImages = if (targetColor != null) {
+            val block = mutableListOf<ImageItem>()
+            var i = targetIndex
+            while (i >= 0 && currentState.extensionGroupColors[currentState.entries[i].id] == targetColor) {
+                block.add(0, currentState.entries[i])
+                i--
+            }
+            i = targetIndex + 1
+            while (i < currentState.entries.size && currentState.extensionGroupColors[currentState.entries[i].id] == targetColor) {
+                block.add(currentState.entries[i])
+                i++
+            }
+            block
+        } else {
+            listOf(currentState.entries[targetIndex])
+        }
+
+        if (similarImages.isEmpty()) return
+        val similarIds = similarImages.map { it.id }.toSet()
+
+        // ② 全画像からグループ連番画像を取得し、未リネームの類似画像も必ず合流させる
+        val groupSeqImages = sortImageList(allImages, SortOption.GROUP_SEQ_ASC)
+        val missingSimilarImages = similarImages.filter { sim -> groupSeqImages.none { it.id == sim.id } }
+        val groupEntries = (groupSeqImages + missingSimilarImages).distinctBy { it.id }.ifEmpty {
+            sortImageList(allImages, SortOption.NAME_ASC)
+        }
+
+        val groupColors = mutableMapOf<Long, Char>()
+        val groupKeyIndexMap = mutableMapOf<String, Int>()
+        for (img in groupEntries) {
+            val info = RenameMoveHelper.parseRenamedFileInfo(img.displayName) ?: continue
+            val groupIdx = groupKeyIndexMap.getOrPut(info.groupKey) { groupKeyIndexMap.size }
+            val colorCategory = ('A'.code + (groupIdx % 26)).toChar()
+            groupColors[img.id] = colorCategory
+        }
+
+        // ③ 直前のハッシュ比較一覧をバックアップし、グループ表示＋該当画像を選択状態に更新
+        _uiState.update {
+            it.copy(
+                isGroupComparisonMode = true,
+                comparisonBackupEntries = currentState.entries,
+                comparisonBackupGroupColors = currentState.extensionGroupColors,
+                comparisonBookmarkIds = similarIds, // 記憶した類似画像ID（選択が0枚になってもジャンプ可能にする用）
+                entries = groupEntries,
+                extensionGroupColors = groupColors,
+                // 類似枠の仲間たちを選択状態にして光度40%オフ＆チェック付きにする
+                selectedIds = similarIds,
+                selectedCount = similarIds.size,
+                selectionMode = true,
+                isSelectionMode = true,
+                currentJumpIndex = 1,
+                matchedCount = groupEntries.size,
+                snackbarMessage = "${similarIds.size}枚を選択しグループ表示へ移動しました（しおりでジャンプ可能）"
+            )
+        }
+
+        // ④ 最初の1枚目の位置へ画面を自動スクロールし、しおりカーソルをセット
+        val firstMatchIndex = groupEntries.indexOfFirst { it.id in similarIds }
+        if (firstMatchIndex >= 0) {
+            jumpCursorIndex = firstMatchIndex
+            requestScroll(firstMatchIndex)
+        } else {
+            jumpCursorIndex = -1
+        }
+    }
+
+    /**
+     * 【※2＋α：グループ比較モードの終了（復帰）】
+     * カテゴリーラベル長押しによって呼ばれ、バックアップから元の★ハッシュ比較一覧に戻します。
+     * はづきさんのご要望どおり、しおりや選択状態も綺麗にリセットします。
+     */
+    fun exitGroupComparisonMode() {
+        val currentState = _uiState.value
+        if (!currentState.isGroupComparisonMode) return
+
+        val backupEntries = currentState.comparisonBackupEntries ?: currentState.entries
+        val backupColors = currentState.comparisonBackupGroupColors
+
+        // しおりのカーソル位置をリセット
+        jumpCursorIndex = -1
+
+        _uiState.update {
+            it.copy(
+                isGroupComparisonMode = false,
+                comparisonBackupEntries = null,
+                comparisonBackupGroupColors = emptyMap(),
+                comparisonBookmarkIds = emptySet(),
+                entries = backupEntries,
+                extensionGroupColors = backupColors,
+                matchedCount = backupEntries.size,
+                // しおり・選択状態を綺麗にリセット
+                selectedIds = emptySet(),
+                selectedCount = 0,
+                selectionMode = false,
+                isSelectionMode = false,
+                currentJumpIndex = null,
+                snackbarMessage = "ハッシュ比較一覧に復帰しました（しおり・選択リセット）"
+            )
+        }
+    }
+
+    /**
+     * 【グループ比較モード中のファイル削除・移動に伴うバックアップ整合性同期】
+     * ファイルが削除または別フォルダへ移動された際、
+     * グループ比較モードで裏に保持している「ハッシュ比較バックアップ一覧」からも
+     * 該当画像を取り除き、復帰時に消えた画像が表示されてしまう不整合を防ぎます。
+     */
+    fun syncBackupAfterFileRemoval(removedIds: Set<Long>) {
+        if (removedIds.isEmpty() || !_uiState.value.isGroupComparisonMode) return
+        _uiState.update { s ->
+            val updatedBackup = s.comparisonBackupEntries?.filter { it.id !in removedIds }
+            val updatedColors = s.comparisonBackupGroupColors.filterKeys { it !in removedIds }
+            val updatedBookmarks = s.comparisonBookmarkIds - removedIds
+            s.copy(
+                comparisonBackupEntries = updatedBackup,
+                comparisonBackupGroupColors = updatedColors,
+                comparisonBookmarkIds = updatedBookmarks
+            )
+        }
+    }
+
+    /**
+     * 【カテゴリーラベル長押し時の処理】
+     * グループ比較モード中なら、ハッシュ比較一覧へ復帰します。
+     */
+    fun handleLabelLongClick() {
+        if (_uiState.value.isGroupComparisonMode) {
+            exitGroupComparisonMode()
+        }
     }
 
     /** 現在の表示順(entries)を基準に、anchorIdとtargetIdの間にある画像をまとめて選択する。 */
@@ -956,6 +1134,22 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             isSelectionMode = true,
             selectedCount = rangeIds.size
         ) }
+    }
+
+    /**
+     * 【選択画像のみ全解除（選択モードは維持）】
+     * 「〇枚選択」ボタンを長押しした際に呼ばれます。
+     * 選択モードは終了させず、選択した画像だけをすべて外して「0枚選択」の状態に戻します。
+     */
+    fun clearSelectionOnly() {
+        _uiState.update {
+            it.copy(
+                selectedIds = emptySet(),
+                selectedCount = 0,
+                currentJumpIndex = null
+            )
+        }
+        jumpCursorIndex = -1
     }
 
     fun clearSelection() {
@@ -983,12 +1177,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     /**
      * 「選択へ」ボタン。押すたびに、今の一覧表示順(entries)の中で選択されている画像を
      * 先頭から順に巡回する(テキスト検索の「次を検索」と同じ考え方)。末尾まで行くと先頭に戻る。
+     * 【※2＋α連携】選択が0枚の場合でも、記憶した類似画像（comparisonBookmarkIds）があればそこへジャンプする。
      */
     fun jumpToNextSelected() {
         val state = _uiState.value
-        if (state.selectedIds.isEmpty()) return
+        val targetIds = if (state.selectedIds.isNotEmpty()) state.selectedIds else state.comparisonBookmarkIds
+        if (targetIds.isEmpty()) return
         val entries = state.entries
-        val matchIndices = entries.indices.filter { entries[it].id in state.selectedIds }
+        val matchIndices = entries.indices.filter { entries[it].id in targetIds }
         if (matchIndices.isEmpty()) return
         
         val currentMatchPos = matchIndices.indexOf(jumpCursorIndex)
@@ -1005,9 +1201,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      */
     fun jumpToFirstSelected() {
         val state = _uiState.value
-        if (state.selectedIds.isEmpty()) return
+        val targetIds = if (state.selectedIds.isNotEmpty()) state.selectedIds else state.comparisonBookmarkIds
+        if (targetIds.isEmpty()) return
         val entries = state.entries
-        val firstMatchIndex = entries.indexOfFirst { it.id in state.selectedIds }
+        val firstMatchIndex = entries.indexOfFirst { it.id in targetIds }
         if (firstMatchIndex >= 0) {
             jumpCursorIndex = firstMatchIndex
             _uiState.update { it.copy(currentJumpIndex = 1) }
@@ -1098,12 +1295,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             _uiState.update { it.copy(snackbarMessage = "削除対象が選択されていません") }
             return
         }
+        val targetIds = targets.map { it.id }.toSet()
         val zipDir = currentZipDir
         val treeUri = currentFolderUri
         when {
             zipDir != null -> viewModelScope.launch {
                 val count = fileOps.deleteImagesLocal(targets)
                 removeImagesFromAllGroups(targets.map { it.id })
+                syncBackupAfterFileRemoval(targetIds)
                 clearSelection()
                 _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
                 reloadCurrentFolder(visibleIndex)
@@ -1111,6 +1310,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             treeUri != null -> viewModelScope.launch {
                 val count = fileOps.deleteImagesSaf(targets)
                 removeImagesFromAllGroups(targets.map { it.id })
+                syncBackupAfterFileRemoval(targetIds)
                 clearSelection()
                 _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
                 reloadCurrentFolder(visibleIndex)
@@ -2064,6 +2264,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
                 // 選択解除＆グループ所属の解除
                 removeImagesFromAllGroups(targets.map { it.id })
+                syncBackupAfterFileRemoval(targets.map { it.id }.toSet())
                 clearSelection()
 
                 // 結果通知＆フォルダの再読み込みで画面を最新化

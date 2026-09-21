@@ -77,6 +77,7 @@ import androidx.compose.foundation.combinedClickable
  * 🔖(しおり) | ▶(スライドショー) | 2.0s(時間) | ⊞(グリッド)
  * =====================================================================
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun OrganizerTopBar(
     // ---- 基本情報 ----
@@ -140,7 +141,9 @@ fun OrganizerTopBar(
 
     // ---- ラベル関連（新規） ----
     displayLabel: String = "",
+    isGroupComparisonMode: Boolean = false, // 【※2＋α】グループ比較モード中かどうか
     onLabelSelectClick: () -> Unit = {},
+    onLabelSelectLongClick: () -> Unit = {}, // 【※2＋α】グループ比較からハッシュ一覧への復帰長押し
     onLabelSelected: (String) -> Unit = {},  // ラベル選択ダイアログからの長押し選択結果を受け取るコールバック
     onLabelSubFolderNavigate: (String) -> Unit = {}, // ラベル選択ダイアログからの通常タップ（サブフォルダ移動）を受け取るコールバック
     canNavigateUp: Boolean = false, // 上の階層へ戻れるかどうか（「..⤴」ボタンのグレーアウト判定）
@@ -161,6 +164,7 @@ fun OrganizerTopBar(
 
     // ---- しおり機能（「選択へ」）----
     currentJumpIndex: Int? = null,
+    comparisonBookmarkCount: Int = 0, // 【※2＋α】記憶した類似画像枚数
     onJumpToSelected: () -> Unit = {},
     onJumpToSelectedLongClick: () -> Unit = {},
 
@@ -309,17 +313,24 @@ fun OrganizerTopBar(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // -ラベル名- （タップで選択モードON/OFFを切り替えるボタン）
-                // 選択モード中は、隣のカテゴリータグアイコンと同じ鮮やかなピンク色（#FF67C6）に変化します
+                // -ラベル名- （タップで選択モードON/OFF、長押しでグループ比較解除）
+                // 通常時: 白 / 選択モード中: ピンク（#FF67C6） / グループ比較中: ライトグリーン（#4FFF94）
                 val labelText = if (displayLabel.isNotBlank()) "-$displayLabel-" else "-未選択-"
-                val labelColor = if (isSelectionMode) Color(0xFFFF67C6) else Color.White
+                val labelColor = when {
+                    isGroupComparisonMode -> Color(0xFF4FFF94) // 【※2＋α】グループ比較表示中
+                    isSelectionMode -> Color(0xFFFF67C6)       // 【※1】選択モード中
+                    else -> Color.White                        // 通常時
+                }
                 Text(
                     text = labelText,
                     color = labelColor,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier
-                        .clickable { onLabelSelectClick() }
+                        .combinedClickable(
+                            onClick = { onLabelSelectClick() },
+                            onLongClick = { onLabelSelectLongClick() }
+                        )
                         .padding(horizontal = 6.dp, vertical = 4.dp)
                 )
 
@@ -373,10 +384,11 @@ fun OrganizerTopBar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // しおり（「選択へ」機能）
-                // 画像が1枚以上選択されていれば有効になり、タップで選択中の画像へ順次スクロール
-                val hasSelection = selectedCount > 0
+                // 手動選択がある場合、またはグループ比較中で記憶画像がある場合に有効化
+                val effectiveCount = if (selectedCount > 0) selectedCount else if (isGroupComparisonMode) comparisonBookmarkCount else 0
+                val hasSelection = effectiveCount > 0
                 val jumpTooltip = if (hasSelection) {
-                    if (currentJumpIndex != null) "次の選択へ (${currentJumpIndex}/${selectedCount})" else "選択へジャンプ (全${selectedCount}枚)"
+                    if (currentJumpIndex != null) "次のジャンプへ (${currentJumpIndex}/${effectiveCount})" else "ジャンプ (全${effectiveCount}枚)"
                 } else {
                     "選択がありません"
                 }

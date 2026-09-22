@@ -70,6 +70,34 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     private var currentZipDir: java.io.File? = null
 
     /**
+     * 【下層📁ON時のハッシュ重複計算結果キャッシュ】
+     * 18,800枚などの大規模な下層画像全体のハッシュ比較結果をメモリに一時保持します。
+     * アプリ起動中に★をOFFにして通常一覧を見たり、再度★をONに戻した際、
+     * 重い全件再スキャンや再計算を一切走らせず、0.1秒で即座にハッシュ一覧を復元するために使用します。
+     */
+    private data class SubFolderHashCache(
+        val entries: List<ImageItem>,
+        val groupColors: Map<Long, Char>,
+        val matchedCount: Int,
+        val hashThreshold: Int?,
+        val saturationTolerance: Float?,
+        val brightnessTolerance: Float?,
+        val styleThreshold: Float
+    ) {
+        /** スライダーなどで条件が変わっていないか検証（条件が同じならキャッシュがそのまま使える） */
+        fun matchesFilter(state: OrganizerUiState): Boolean {
+            val effHash = if (state.hashMatchEnabled) state.hashMatchThreshold else null
+            val effSat = if (state.saturationTolerance > 0f) state.saturationTolerance else null
+            val effBri = if (state.brightnessTolerance > 0f) state.brightnessTolerance else null
+            return hashThreshold == effHash &&
+                   saturationTolerance == effSat &&
+                   brightnessTolerance == effBri &&
+                   styleThreshold == state.styleMatchThreshold
+        }
+    }
+    private var subFolderHashCache: SubFolderHashCache? = null
+
+    /**
      * リネーム直後、次のreloadCurrentFolder()完了時にこの名前群と一致する画像を選択し直すための一時保存。
      * SAF/ローカルではリネームによって画像のID自体が変わりうる(URIやパスが変わるため)ので、
      * IDの一致に頼らず「リネームで付くはずの新ファイル名」との一致で選択を復元する。
@@ -192,6 +220,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
         if (clearBackStack) {
             clearFolderBackStack()
+            subFolderHashCache = null // フォルダ切り替えのためキャッシュ解放
         }
         currentFolderUri = null
         currentZipDir = null
@@ -233,6 +262,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
         if (clearBackStack) {
             clearFolderBackStack()
+            subFolderHashCache = null // フォルダ切り替えのためキャッシュ解放
             // 起点フォルダの権限（マスターキー）として保持
             rootTreeUri = treeUri
             currentFolderDocId = null
@@ -296,6 +326,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         cancelComparing()
 
         clearFolderBackStack()
+        subFolderHashCache = null // ZIP切り替えのためキャッシュ解放
         currentFolderUri = null
         _uiState.update {
             it.copy(
@@ -587,6 +618,15 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      */
     fun toggleExtensionSelection() {
         val state = _uiState.value
+
+        // 【※2：下層フォルダ潜り中からの★ワープ復帰】
+        // 下層📁ONのまとめ一覧から下層フォルダへ一時ジャンプしている最中に「★」を押した場合は、
+        // ★を解除してしまうのではなく、ルートフォルダの★ハッシュ値一覧へ一瞬で復帰します！
+        if (state.isSubFolderGroupMode) {
+            exitSubFolderGroupMode()
+            return
+        }
+
         if (state.extensionSelectionActive) {
             disableExtensionSelection()
             return
@@ -594,12 +634,17 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         // 選択画像がある場合は基準画像(origin)として保持し、未選択ならフォルダ全件を対象にする
         val origin = state.entries.firstOrNull { it.id in state.selectedIds } ?: selectedImages().firstOrNull()
 
+        // 【下層📁状態のスマート引き継ぎ】
+        // 直前に下層📁ONだった場合、または既に下層のハッシュキャッシュが存在する場合は
+        // 「下層📁:ON」を維持して即座にキャッシュ復旧できるようにします。
+        val keepSubFolders = state.includeSubFolders || (subFolderHashCache != null)
+
         _uiState.update {
             it.copy(
                 extensionSelectionActive = true,
                 originImageId = origin?.id,
                 focusedImageId = origin?.id, // 拡張選択開始時は基準画像をフォーカス対象に設定
-                includeSubFolders = false, // ★ボタン起動時はデフォルトで「現在いるフォルダ直下のみ（下層📁:OFF）」
+                includeSubFolders = keepSubFolders, // 下層📁ONまたはキャッシュがあればONを維持！
                 hashMatchEnabled = true, // 最初からハッシュ比較をONにして重複を探す
                 hashMatchThreshold = 10, // デフォルト閾値10
                 saturationTolerance = 0f,
@@ -622,7 +667,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun toggleIncludeSubFolders() {
         val newInclude = !_uiState.value.includeSubFolders
         _uiState.update { it.copy(includeSubFolders = newInclude) }
-        // 下層を含めるかどうかが切り替わったため、現在のフォルダを即座に再読込
+        // 【下層📁切り替え時のキャッシュ解放】
+        // 下層を含めるかどうかが切り替わったため、キャッシュをクリアしてメモリを解放
+        subFolderHashCache = null
+        // 現在のフォルダを即座に再読込
         reloadCurrentFolder()
     }
 
@@ -715,34 +763,16 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             )
         }
 
-        // ② 別フォルダ（下層フォルダ）の画像かどうかを判定
-        val targetDocId = targetImage?.parentFolderDocId
-        val isDifferentSubFolder = targetDocId != null && targetDocId != currentFolderDocId && baseTree != null
+        // ② 現在のフォルダのまま通常表示へ反映
+        // ※下層フォルダへの個別移動は「画像長押し」で行えるため、
+        //   ★解除時は勝手に下層フォルダへジャンプせず、今いるフォルダ（ルート）の通常一覧へ安全に戻ります。
+        applyDisplayList()
 
-        if (isDifferentSubFolder && targetImage != null) {
-            // 【別フォルダへ移動】
-            // 移動前に現在の親フォルダを戻りスタックに積む（あとから「..⤴」ボタンで親に戻れます）
-            pushCurrentFolderToBackStack()
-            val folderName = targetImage.parentFolderName ?: "フォルダ"
-            openFolder(
-                treeUri = baseTree!!,
-                label = folderName,
-                recordHistory = false,
-                clearBackStack = false,
-                targetDocId = targetDocId,
-                targetImageId = targetImage.id // 読込完了後にこの画像の先頭へスクロール
-            )
-        } else {
-            // 【同じフォルダ内の場合】
-            // 通常の一覧表示へ反映
-            applyDisplayList()
-
-            // ターゲット画像の位置を特定し、最上部にスクロール
-            if (targetImage != null) {
-                val restoredIndex = _uiState.value.entries.indexOfFirst { it.id == targetImage.id }
-                if (restoredIndex >= 0) {
-                    requestScroll(restoredIndex)
-                }
+        // ターゲット画像が現在のフォルダ内に存在する場合は、その位置へスクロール
+        if (targetImage != null) {
+            val restoredIndex = _uiState.value.entries.indexOfFirst { it.id == targetImage.id }
+            if (restoredIndex >= 0) {
+                requestScroll(restoredIndex)
             }
         }
     }
@@ -760,6 +790,24 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      */
     private fun applyExtensionSelectionFilter(sorted: List<ImageItem>, state: OrganizerUiState) {
         comparingJob?.cancel()
+
+        // 【下層📁ON時のキャッシュ即時復旧（待ち時間ゼロ機能）】
+        // 下層📁ONの状態で既にハッシュ計算済みのキャッシュが存在し、かつスライダー等のフィルタ条件が変わっていない場合は、
+        // 18,800枚の重い再計算を完全にスキップして0.1秒で即座にハッシュ一覧を復元します！
+        val cache = subFolderHashCache
+        if (state.includeSubFolders && cache != null && cache.matchesFilter(state)) {
+            _uiState.update {
+                it.copy(
+                    entries = cache.entries,
+                    isComparing = false,
+                    matchedCount = cache.matchedCount,
+                    extensionGroupColors = cache.groupColors,
+                    hashProgressText = null
+                )
+            }
+            return
+        }
+
         comparingJob = viewModelScope.launch {
             _uiState.update { it.copy(isComparing = true) }
 
@@ -848,6 +896,20 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                     )
                 }
                 return@launch
+            }
+
+            // 【下層📁ON時の計算結果をキャッシュに保存】
+            // 次回★をONにした際に瞬時に再表示できるようにメモリにキープ
+            if (current.includeSubFolders) {
+                subFolderHashCache = SubFolderHashCache(
+                    entries = orderedEntries,
+                    groupColors = groupColors,
+                    matchedCount = orderedEntries.size,
+                    hashThreshold = effectiveHashThreshold,
+                    saturationTolerance = satTolerance,
+                    brightnessTolerance = briTolerance,
+                    styleThreshold = styleThreshold
+                )
             }
 
             _uiState.update {
@@ -1325,16 +1387,32 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      * 復帰時に消えた画像が表示されてしまう不整合を完全に防ぎます。
      */
     fun syncBackupAfterFileRemoval(removedIds: Set<Long>) {
-        if (removedIds.isEmpty() || (!_uiState.value.isGroupComparisonMode && !_uiState.value.isSubFolderGroupMode)) return
-        _uiState.update { s ->
-            val updatedBackup = s.comparisonBackupEntries?.filter { it.id !in removedIds }
-            val updatedColors = s.comparisonBackupGroupColors.filterKeys { it !in removedIds }
-            val updatedBookmarks = s.comparisonBookmarkIds - removedIds
-            s.copy(
-                comparisonBackupEntries = updatedBackup,
-                comparisonBackupGroupColors = updatedColors,
-                comparisonBookmarkIds = updatedBookmarks
+        if (removedIds.isEmpty()) return
+
+        // 【下層ハッシュキャッシュの常時同期除外】
+        // どんな画面（通常フォルダ、下層フォルダ、長押し潜り中など）で画像が削除されても、
+        // キャッシュが存在するなら削除画像を即時除外し、後で★を押したときに消した画像が出ないよう完全同期！
+        subFolderHashCache = subFolderHashCache?.let { c ->
+            val newEntries = c.entries.filter { it.id !in removedIds }
+            c.copy(
+                entries = newEntries,
+                groupColors = c.groupColors.filterKeys { it !in removedIds },
+                matchedCount = newEntries.size
             )
+        }
+
+        // バックアップ一覧（潜り中・グループ比較中）の更新
+        if (_uiState.value.isGroupComparisonMode || _uiState.value.isSubFolderGroupMode) {
+            _uiState.update { s ->
+                val updatedBackup = s.comparisonBackupEntries?.filter { it.id !in removedIds }
+                val updatedColors = s.comparisonBackupGroupColors.filterKeys { it !in removedIds }
+                val updatedBookmarks = s.comparisonBookmarkIds - removedIds
+                s.copy(
+                    comparisonBackupEntries = updatedBackup,
+                    comparisonBackupGroupColors = updatedColors,
+                    comparisonBookmarkIds = updatedBookmarks
+                )
+            }
         }
     }
 
@@ -1457,9 +1535,27 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    /**
+     * 【選択画像の取得】
+     * 現在ユーザーが選択（チェック）している ImageItem の一覧を取得します。
+     * 1. まず現在画面に表示されている一覧（_uiState.value.entries）からIDが一致するものを探します。
+     *    （★拡張選択中・ハッシュ値一覧表示中など、絞り込み画面での選択を最優先で確実に取得するため）
+     * 2. 画面一覧に見つからない画像があれば、フォルダ全体の生リスト（allImages）からも補完して取得します。
+     */
     private fun selectedImages(): List<ImageItem> {
         val ids = _uiState.value.selectedIds
-        return allImages.filter { it.id in ids }
+        if (ids.isEmpty()) return emptyList()
+        val currentEntries = _uiState.value.entries
+        val fromEntries = currentEntries.filter { it.id in ids }
+        // 選択されたIDがすべて画面一覧から見つかった場合はそれを返す
+        if (fromEntries.size == ids.size) {
+            return fromEntries
+        }
+        // 画面一覧にないIDが含まれる場合は、allImages からも探して合流（重複IDは除外）
+        val foundIds = fromEntries.map { it.id }.toSet()
+        val missingIds = ids - foundIds
+        val fromAll = allImages.filter { it.id in missingIds }
+        return fromEntries + fromAll
     }
 
     /**
@@ -1516,12 +1612,14 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             zipDir != null -> viewModelScope.launch {
                 val moved = fileOps.moveToMovedFolderLocal(targets)
                 removeImagesFromAllGroups(moved.map { it.id })
+                syncBackupAfterFileRemoval(moved.map { it.id }.toSet())
                 _uiState.update { it.copy(snackbarMessage = "${moved.size}件を_Moved_に移動しました") }
                 reloadCurrentFolder(visibleIndex)
             }
             treeUri != null -> viewModelScope.launch {
                 val moved = fileOps.moveToMovedFolderSaf(treeUri, targets)
                 removeImagesFromAllGroups(moved.map { it.id })
+                syncBackupAfterFileRemoval(moved.map { it.id }.toSet())
                 _uiState.update { it.copy(snackbarMessage = "${moved.size}件を_Moved_に移動しました") }
                 reloadCurrentFolder(visibleIndex)
             }
@@ -1533,7 +1631,15 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /** @param visibleIndex 実行直前に一覧で見えていた先頭位置(削除後の再読込でこの位置付近を維持する) */
+    /**
+     * 【選択画像の削除処理】
+     * 選択された画像を安全に削除します。
+     * ★拡張選択モード（ハッシュ値比較一覧画面）表示中の場合は、
+     * 18,800枚などの全件再読込・再ハッシュ計算を一切走らせず、
+     * 現在画面に出ている一覧（entries）と生リスト（allImages）から削除した画像だけを即座に除外（同期）します。
+     *
+     * @param visibleIndex 実行直前に一覧で見えていた先頭位置(削除後の再読込でこの位置付近を維持する)
+     */
     fun deleteSelected(visibleIndex: Int) {
         val targets = selectedImages()
         if (targets.isEmpty()) {
@@ -1543,22 +1649,82 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         val targetIds = targets.map { it.id }.toSet()
         val zipDir = currentZipDir
         val treeUri = currentFolderUri
+        val currentState = _uiState.value
+        // ★拡張選択モード（ハッシュ値比較一覧など）表示中かどうか（下層フォルダ潜り中は除外）
+        val isExtensionActive = currentState.extensionSelectionActive && !currentState.isSubFolderGroupMode
+
         when {
             zipDir != null -> viewModelScope.launch {
                 val count = fileOps.deleteImagesLocal(targets)
                 removeImagesFromAllGroups(targets.map { it.id })
                 syncBackupAfterFileRemoval(targetIds)
-                clearSelection()
-                _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
-                reloadCurrentFolder(visibleIndex)
+                clearSelectionOnly() // 選択チェックのみクリアし、選択モード自体は維持
+
+                if (isExtensionActive) {
+                    // 【★ハッシュ値一覧表示中の高速同期】
+                    // 全件再読込・再ハッシュ計算をスキップし、現在の一覧から削除した画像だけを即座に除外
+                    allImages = allImages.filter { it.id !in targetIds }
+                    // キャッシュからも削除画像を除外して同期維持
+                    subFolderHashCache = subFolderHashCache?.let { c ->
+                        val newEntries = c.entries.filter { it.id !in targetIds }
+                        c.copy(
+                            entries = newEntries,
+                            groupColors = c.groupColors.filterKeys { it !in targetIds },
+                            matchedCount = newEntries.size
+                        )
+                    }
+                    _uiState.update { s ->
+                        val updatedEntries = s.entries.filter { it.id !in targetIds }
+                        val updatedColors = s.extensionGroupColors.filterKeys { it !in targetIds }
+                        s.copy(
+                            entries = updatedEntries,
+                            extensionGroupColors = updatedColors,
+                            matchedCount = updatedEntries.size,
+                            totalImageCount = (s.totalImageCount - count).coerceAtLeast(0),
+                            snackbarMessage = "${count}件を削除しました"
+                        )
+                    }
+                } else {
+                    // 通常のフォルダ表示時は従来通り再読込
+                    _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
+                    reloadCurrentFolder(visibleIndex)
+                }
             }
             treeUri != null -> viewModelScope.launch {
                 val count = fileOps.deleteImagesSaf(targets)
                 removeImagesFromAllGroups(targets.map { it.id })
                 syncBackupAfterFileRemoval(targetIds)
-                clearSelection()
-                _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
-                reloadCurrentFolder(visibleIndex)
+                clearSelectionOnly() // 選択チェックのみクリアし、選択モード自体は維持
+
+                if (isExtensionActive) {
+                    // 【★ハッシュ値一覧表示中の高速同期】
+                    // 全件再読込・再ハッシュ計算をスキップし、現在の一覧から削除した画像だけを即座に除外
+                    allImages = allImages.filter { it.id !in targetIds }
+                    // キャッシュからも削除画像を除外して同期維持
+                    subFolderHashCache = subFolderHashCache?.let { c ->
+                        val newEntries = c.entries.filter { it.id !in targetIds }
+                        c.copy(
+                            entries = newEntries,
+                            groupColors = c.groupColors.filterKeys { it !in targetIds },
+                            matchedCount = newEntries.size
+                        )
+                    }
+                    _uiState.update { s ->
+                        val updatedEntries = s.entries.filter { it.id !in targetIds }
+                        val updatedColors = s.extensionGroupColors.filterKeys { it !in targetIds }
+                        s.copy(
+                            entries = updatedEntries,
+                            extensionGroupColors = updatedColors,
+                            matchedCount = updatedEntries.size,
+                            totalImageCount = (s.totalImageCount - count).coerceAtLeast(0),
+                            snackbarMessage = "${count}件を削除しました"
+                        )
+                    }
+                } else {
+                    // 通常のフォルダ表示時は従来通り再読込
+                    _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
+                    reloadCurrentFolder(visibleIndex)
+                }
             }
             else -> {
                 pendingAction = PendingMediaAction.Delete(targets, visibleIndex)
@@ -1631,11 +1797,42 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         viewModelScope.launch {
             when (action) {
                 is PendingMediaAction.Delete -> {
+                    val targetIds = action.targets.map { it.id }.toSet()
+                    val count = action.targets.size
+                    val isExtensionActive = _uiState.value.extensionSelectionActive && !_uiState.value.isSubFolderGroupMode
+
                     // グループからも削除対象の画像を除去する
                     removeImagesFromAllGroups(action.targets.map { it.id })
-                    clearSelection()
-                    _uiState.update { it.copy(snackbarMessage = "${action.targets.size}件を削除しました") }
-                    reloadCurrentFolder(action.restoreScrollIndex)
+                    syncBackupAfterFileRemoval(targetIds)
+                    clearSelectionOnly()
+
+                    if (isExtensionActive) {
+                        // 【★ハッシュ値一覧表示中の高速同期】
+                        allImages = allImages.filter { it.id !in targetIds }
+                        // キャッシュからも削除画像を除外して同期維持
+                        subFolderHashCache = subFolderHashCache?.let { c ->
+                            val newEntries = c.entries.filter { it.id !in targetIds }
+                            c.copy(
+                                entries = newEntries,
+                                groupColors = c.groupColors.filterKeys { it !in targetIds },
+                                matchedCount = newEntries.size
+                            )
+                        }
+                        _uiState.update { s ->
+                            val updatedEntries = s.entries.filter { it.id !in targetIds }
+                            val updatedColors = s.extensionGroupColors.filterKeys { it !in targetIds }
+                            s.copy(
+                                entries = updatedEntries,
+                                extensionGroupColors = updatedColors,
+                                matchedCount = updatedEntries.size,
+                                totalImageCount = (s.totalImageCount - count).coerceAtLeast(0),
+                                snackbarMessage = "${count}件を削除しました"
+                            )
+                        }
+                    } else {
+                        _uiState.update { it.copy(snackbarMessage = "${count}件を削除しました") }
+                        reloadCurrentFolder(action.restoreScrollIndex)
+                    }
                 }
                 is PendingMediaAction.Move -> {
                     val moved = fileOps.moveToMovedFolder(action.targets)

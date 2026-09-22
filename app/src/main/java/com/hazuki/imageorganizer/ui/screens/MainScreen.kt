@@ -347,6 +347,9 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                                         state.groupedImageIds
                                     },
                                     dimmedIds = dimmedIds,
+                                    // 【起点フォルダ名】ルート直下画像（○）と下層フォルダ画像（📁）を見分けるために渡す
+                                    // パス形式(例: "Download/未整理")の場合でも末尾のフォルダ名("未整理")を抽出
+                                    currentFolderName = state.currentFolderLabel.substringAfterLast('/'),
                                     modifier = Modifier.fillMaxSize().padding(padding)
                                 )
                             }

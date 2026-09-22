@@ -47,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Slider
@@ -316,12 +317,13 @@ fun OrganizerTopBar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // -ラベル名- （タップで選択モードON/OFF、長押しでグループ比較解除）
-                // 通常時: 白 / 選択モード中: ピンク（#FF67C6） / グループ比較中: ライトグリーン（#4FFF94） / 下層フォルダ移動中: 赤（#B60500）
+                // 通常時: 白 / 選択モード中: ピンク（#FF67C6） / グループ比較中・★ハッシュ値一覧中: ライトグリーン（#4FFF94） / 下層フォルダ移動中: 赤（#B60500）
                 val labelText = if (displayLabel.isNotBlank()) "-$displayLabel-" else "-未選択-"
                 val labelColor = when {
                     isSubFolderGroupMode -> Color(0xFFB60500)  // 【※2】下層フォルダ移動中（はづきさんご指定の深赤色: #B60500）
+                    isSelectionMode -> Color(0xFFFF67C6)       // 【※1】選択モード中（ピンク紫）
                     isGroupComparisonMode -> Color(0xFF4FFF94) // 【※2＋α】グループ比較表示中
-                    isSelectionMode -> Color(0xFFFF67C6)       // 【※1】選択モード中
+                    extensionSelectionActive -> Color(0xFF4FFF94) // ★ハッシュ値一覧表示中（ライトグリーン）
                     else -> Color.White                        // 通常時
                 }
                 Text(
@@ -329,6 +331,9 @@ fun OrganizerTopBar(
                     color = labelColor,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
+                    // ★ハッシュ値一覧中（拡張選択中）は常にアンダーバーを表示して通常一覧と明確に区別
+                    // 選択モード中（ピンク紫）でもアンダーバーが残るため、ハッシュ一覧内での選択中であることが一目でわかります
+                    textDecoration = if (extensionSelectionActive) TextDecoration.Underline else null,
                     modifier = Modifier
                         .combinedClickable(
                             onClick = { onLabelSelectClick() },

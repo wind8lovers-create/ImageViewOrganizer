@@ -1094,14 +1094,24 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             val targetImage = state.entries.firstOrNull { it.id == imageId }
             val targetDocId = targetImage?.parentFolderDocId
             val baseTree = rootTreeUri ?: currentFolderUri
-            val isDifferentSubFolder = state.includeSubFolders && targetDocId != null && targetDocId != currentFolderDocId && baseTree != null
+
+            // 【下層フォルダ判定の厳密化】
+            // 現在の起点フォルダ名（例: "未整理"）と、画像の所属フォルダ名を見比べて
+            // 長押しされた画像が本当に下層フォルダの画像かどうかを正確に判定します
+            val currentRootName = state.currentFolderLabel.substringAfterLast('/')
+            val isSubFolder = !targetImage?.parentFolderName.isNullOrBlank() &&
+                    targetImage?.parentFolderName != currentRootName
+
+            // 下層フォルダONかつ実際に下層フォルダ内の画像の場合のみ、下層フォルダ移動処理へ
+            val isDifferentSubFolder = state.includeSubFolders && isSubFolder && targetDocId != null && baseTree != null
 
             if (isDifferentSubFolder && targetImage != null) {
                 // 【※2：下層📁ON時の下層画像長押し】
                 // 下層フォルダの画像が長押しされた場合、その下層フォルダへ移動してグループ表示に切り替え
                 enterSubFolderGroupMode(targetImage)
             } else {
-                // 通常のルートフォルダ（同一フォルダ内）でのグループ比較モード
+                // 【※1：ルート直下の画像長押し（または下層フォルダOFF時）】
+                // ルートフォルダ（同一フォルダ内）でのグループ比較モード
                 enterGroupComparisonMode(imageId)
             }
         }
@@ -1142,10 +1152,22 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         val similarIds = similarImages.map { it.id }.toSet()
 
         // ② 全画像からグループ連番画像を取得し、未リネームの類似画像も必ず合流させる
-        val groupSeqImages = sortImageList(allImages, SortOption.GROUP_SEQ_ASC)
+        // 【※1：下層フォルダON時のルート画像絞り込み】
+        // 下層フォルダON時は、ルート直下の画像のみを対象にしてグループ表示を行います（下層の画像が混ざるのを防止）
+        val targetImages = if (currentState.includeSubFolders) {
+            val rootName = currentState.currentFolderLabel.substringAfterLast('/')
+            allImages.filter { it.parentFolderName.isNullOrBlank() || it.parentFolderName == rootName }
+        } else {
+            allImages
+        }
+
+        // グループ連番ソート（_nn_mm形式のファイルのみ抽出）
+        val groupSeqImages = sortImageList(targetImages, SortOption.GROUP_SEQ_ASC)
+        // まだグループ化されていない未リネームの類似画像を抽出
         val missingSimilarImages = similarImages.filter { sim -> groupSeqImages.none { it.id == sim.id } }
+        // グループ連番画像の後ろに、未グループ化画像を末尾合流させて表示リストを完成
         val groupEntries = (groupSeqImages + missingSimilarImages).distinctBy { it.id }.ifEmpty {
-            sortImageList(allImages, SortOption.NAME_ASC)
+            sortImageList(targetImages, SortOption.NAME_ASC)
         }
 
         val groupColors = mutableMapOf<Long, Char>()
@@ -1275,7 +1297,18 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
                 // 全画像からグループ連番ソートを適用（_nn_mm形式のファイルを枠色分け）
                 val groupSeqImages = sortImageList(fetchedImages, SortOption.GROUP_SEQ_ASC)
-                val finalEntries = groupSeqImages.ifEmpty { sortImageList(fetchedImages, SortOption.NAME_ASC) }
+
+                // 【※2：下層フォルダ内での未グループ化画像の末尾合流】
+                // 長押しされた画像がまだグループ化（リネーム）されていない場合でも、
+                // グループ連番画像の一番最後に必ず合流させて表示・選択・フォーカスできるようにします
+                val finalEntries = if (groupSeqImages.any { it.id == targetImage.id }) {
+                    groupSeqImages
+                } else {
+                    // 末尾に合流（グループ連番画像 + 未グループ化の長押し対象画像）
+                    groupSeqImages + targetImage
+                }.ifEmpty {
+                    sortImageList(fetchedImages, SortOption.NAME_ASC)
+                }
 
                 // グループ枠線の色分け（A〜Z）を計算
                 val groupColors = mutableMapOf<Long, Char>()

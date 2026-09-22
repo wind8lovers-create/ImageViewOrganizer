@@ -19,7 +19,9 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
@@ -61,7 +63,9 @@ fun ImageGrid(
     // groupedImageIds: 画像ID -> 所属カテゴリ。枠色の表示に使う(選択モードでなくても常時表示)。
     // dimmedIds: 選択モード中、既に他のグループに入っていて選択できない画像(暗く表示・タップ無効化)。
     groupedImageIds: Map<Long, Char> = emptyMap(),
-    dimmedIds: Set<Long> = emptySet()
+    dimmedIds: Set<Long> = emptySet(),
+    // 【起点フォルダ名】ルート直下の画像か下層フォルダの画像かを判別するために使用（例: "未整理"）
+    currentFolderName: String? = null
 ) {
     val state = gridState
     val coroutineScope = rememberCoroutineScope()
@@ -83,7 +87,8 @@ fun ImageGrid(
                     onTap = onTap,
                     onLongPress = onLongPress,
                     groupCategory = groupedImageIds[entries[index].id],
-                    isDimmed = entries[index].id in dimmedIds
+                    isDimmed = entries[index].id in dimmedIds,
+                    currentFolderName = currentFolderName
                 )
             }
         }
@@ -179,7 +184,9 @@ private fun GridCellContent(
     onTap: (Int) -> Unit,
     onLongPress: (Int) -> Unit,
     groupCategory: Char? = null,
-    isDimmed: Boolean = false
+    isDimmed: Boolean = false,
+    // 【起点フォルダ名】ルート直下か下層フォルダかを比較判別するためのフォルダ名
+    currentFolderName: String? = null
 ) {
     val image = entries[index]
     val isSelected = image.id in selectedIds
@@ -228,10 +235,30 @@ private fun GridCellContent(
             Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)))
         }
 
+        // 選択モード中の右上アイコン表示
+        // ルート直下か下層フォルダかによって、丸アイコンとフォルダアイコンを使い分けます
         if (selectionMode) {
+            // 画像の親フォルダ名が存在し、かつ現在の起点フォルダ名と異なる場合は「下層フォルダ内の画像」と判定
+            // ※ 親フォルダ名が未取得(null/空)の場合や、起点フォルダ名と一致する場合はルート直下の画像とみなします
+            val isSubFolderImage = !image.parentFolderName.isNullOrBlank() &&
+                    !currentFolderName.isNullOrBlank() &&
+                    image.parentFolderName != currentFolderName
+
+            // 下層フォルダの画像なら 📁、ルート直下の画像なら ○
+            val iconVector = when {
+                isSubFolderImage -> {
+                    // 下層フォルダ内の画像: 選択時は塗りつぶしフォルダ、未選択時は枠線フォルダ
+                    if (isSelected) Icons.Filled.Folder else Icons.Outlined.Folder
+                }
+                else -> {
+                    // ルート直下の画像: 選択時はチェックマーク、未選択時は枠線丸
+                    if (isSelected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked
+                }
+            }
+
             Icon(
-                imageVector = if (isSelected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
-                contentDescription = null,
+                imageVector = iconVector,
+                contentDescription = if (isSubFolderImage) "下層フォルダ画像" else "ルート画像",
                 tint = Color.White,
                 modifier = Modifier
                     .align(Alignment.TopEnd)

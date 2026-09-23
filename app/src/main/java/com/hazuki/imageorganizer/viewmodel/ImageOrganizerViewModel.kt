@@ -691,6 +691,11 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun setSortOption(option: SortOption) {
         _uiState.update { it.copy(sortOption = option, sortSheetVisible = false) }
         applyDisplayList()
+
+        // 【先頭スクロール】カタログ表示や新しいソート順に切り替えた際は、
+        // 前のスクロール位置（途中）が引き継がれてしまわないよう、
+        // 必ず一覧の一番先頭（0番目）から見渡せるようにスクロール位置をリセットします。
+        requestScroll(0)
     }
 
     fun toggleSortSheet(visible: Boolean) {
@@ -2201,7 +2206,27 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         val entries = state.entries
         if (entries.isEmpty()) return
 
-        val targetEntries = if (state.selectedIds.isNotEmpty()) {
+        // 【カタログ表示時のグループ全画像一括展開】
+        // カタログ表示（1枚目）のときに「▶」が押された場合は、
+        // 選ばれた代表画像（または全カタログ画像）を、それぞれのグループに属する全ファイル（連番昇順）へ展開します。
+        val targetEntries = if (state.sortOption == SortOption.GROUP_CATALOG_DESC) {
+            val baseReps = if (state.selectedIds.isNotEmpty()) {
+                entries.filter { it.id in state.selectedIds }
+            } else {
+                entries
+            }
+            // 各グループの全画像を連番（01, 02, 03...）順に取得して一本のリストに統合
+            baseReps.flatMap { repItem ->
+                val info = RenameMoveHelper.parseRenamedFileInfo(repItem.displayName)
+                if (info != null) {
+                    allImages
+                        .filter { RenameMoveHelper.parseRenamedFileInfo(it.displayName)?.groupKey == info.groupKey }
+                        .sortedBy { RenameMoveHelper.parseRenamedFileInfo(it.displayName)?.let { inf -> RenameMoveHelper.fromSeqCode(inf.seqCode) } ?: 0 }
+                } else {
+                    listOf(repItem)
+                }
+            }
+        } else if (state.selectedIds.isNotEmpty()) {
             entries.filter { it.id in state.selectedIds }
         } else {
             entries
@@ -2212,6 +2237,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         // 選択が無い場合は一覧で見えている位置から開始する
         val startIndex = if (state.selectedIds.isNotEmpty()) {
             0
+        } else if (state.sortOption == SortOption.GROUP_CATALOG_DESC) {
+            // カタログ表示で未選択時は、現在見えているカタログ画像の先頭から開始
+            val startImageId = entries.getOrNull(visibleIndex)?.id
+            targetEntries.indexOfFirst { it.id == startImageId }.coerceAtLeast(0)
         } else {
             visibleIndex.coerceIn(0, targetEntries.size - 1)
         }
@@ -2654,10 +2683,26 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         // slideshowIndexは「対象リスト(targets)」上の位置であり、一覧グリッド(entries)上の位置とは
         // 選択再生時にズレることがあるため、いま表示中だった画像のIDを介して
         // 一覧グリッド側での実際の位置に変換してからスクロールさせる。
-        val stoppedImageId = targets.getOrNull(state.slideshowIndex.mod(targets.size.coerceAtLeast(1)))?.id
+        val stoppedImage = targets.getOrNull(state.slideshowIndex.mod(targets.size.coerceAtLeast(1)))
+        val stoppedImageId = stoppedImage?.id
         val gridIndex = stoppedImageId
-            ?.let { id -> state.entries.indexOfFirst { it.id == id } }
-            ?.takeIf { it >= 0 }
+            ?.let { id ->
+                val directIndex = state.entries.indexOfFirst { it.id == id }
+                if (directIndex >= 0) {
+                    directIndex
+                } else if (state.sortOption == SortOption.GROUP_CATALOG_DESC && stoppedImage != null) {
+                    // カタログ表示の場合、2枚目以降の画像はカタログ一覧に直接並んでいないため、
+                    // その画像が所属するグループの代表画像（1枚目）を探して位置を合わせます
+                    val stoppedInfo = RenameMoveHelper.parseRenamedFileInfo(stoppedImage.displayName)
+                    if (stoppedInfo != null) {
+                        state.entries.indexOfFirst {
+                            RenameMoveHelper.parseRenamedFileInfo(it.displayName)?.groupKey == stoppedInfo.groupKey
+                        }.coerceAtLeast(0)
+                    } else 0
+                } else {
+                    0
+                }
+            }
             ?: 0
 
         // フルスクリーン表示は開かず、一覧側をこの位置までスクロールさせて「続きから見られる」ようにする
@@ -3136,10 +3181,18 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                     }
                 }
 
-                // リネーム後も選択を維持するため、新ファイル名をセット
-                if (expectedNewNames.isNotEmpty()) {
-                    pendingSelectByName = expectedNewNames
-                }
+                // -------------------------------------------------------------------------
+                // 【将来用メモ】もしリネーム後も選択状態を自動維持したい場合は、
+                // 以下のコメントアウト（//）を解除し、下の clearSelectionOnly() をコメントアウトしてください。
+                // if (expectedNewNames.isNotEmpty()) {
+                //     pendingSelectByName = expectedNewNames
+                // }
+                // -------------------------------------------------------------------------
+
+                // 【選択リセット】選択モード自体（isSelectionMode = true）は維持したまま、
+                // リネームが完了した画像たちのチェック（枠や番号）だけをクリアします。
+                // これにより、作業完了後にすぐ次の画像選択へ移ることができます。
+                clearSelectionOnly()
 
                 _uiState.update { it.copy(snackbarMessage = "${successCount}枚を「${sanitizedLabel}_連番」にリネームしました") }
                 reloadCurrentFolder(0)

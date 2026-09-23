@@ -36,7 +36,8 @@ fun SortBottomSheet(
                 color = FujiPrimaryDark,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
             )
-            SortOption.values().forEach { option ->
+            // ユーザー選択可能なソート項目（visibleValues）のみを一覧表示
+            SortOption.visibleValues.forEach { option ->
                 Text(
                     text = option.label,
                     color = if (option == currentSort) FujiPrimaryDark else FujiPrimaryDark.copy(alpha = 0.7f),

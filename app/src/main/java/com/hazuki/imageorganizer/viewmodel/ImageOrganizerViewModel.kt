@@ -3374,6 +3374,232 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
+     * 【フォルダ内のグループ番号整理（デフラグリナンバー）】
+     * 現在開いているフォルダ内の連番ファイル（ラベル_XX_XX.拡張子）を対象に、
+     * グループ番号の歯抜け（飛び番）を詰め、01から連続する番号（01, 02, 03...）に振り直します。
+     * 
+     * ■ 動作の仕様:
+     * 1. 命名規則に合致しないファイルは安全のためスキップ。
+     * 2. 各グループの仲間関係（旧グループ番号が同一のファイル群）はそのまま維持。
+     * 3. 各ファイルの画像連番（_00, _01 等）は変更せずそのまま維持。
+     * 4. 先頭のラベル名は、現在選択中のカテゴリーラベル（newLabel）に統一。
+     * 5. 同一フォルダ内でのファイル名衝突を防ぐため、「2段階リネーム（一時退避 ➔ 本番リネーム）」を実行。
+     */
+    fun executeDefragGroupNumbers(newLabel: String) {
+        val rawLabel = newLabel.ifBlank { "未分類" }
+        val sanitizedNewLabel = com.hazuki.imageorganizer.data.RenameMoveHelper.sanitizeForFilename(rawLabel.replace(" ", ""))
+
+        val zipDir = currentZipDir
+        val treeUri = currentFolderUri
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                // 1. 現在の全画像から、RenameMoveHelperの規則に合致するファイルのみを抽出（合致しないファイルはスキップ）
+                val parsedItems = allImages.mapNotNull { item ->
+                    val info = com.hazuki.imageorganizer.data.RenameMoveHelper.parseRenamedFileInfo(item.displayName)
+                    if (info != null) item to info else null
+                }
+
+                if (parsedItems.isEmpty()) {
+                    _uiState.update { it.copy(snackbarMessage = "整理対象の連番ファイルが見つかりませんでした") }
+                    return@launch
+                }
+
+                // 2. 既存のグループ番号ごとにグループ分け
+                // 旧グループ番号（fromSeqCode で数値換算）の昇順でソート
+                val groupedByGroupCode = parsedItems.groupBy { it.second.groupCode }
+                val sortedGroups = groupedByGroupCode.entries.sortedBy { entry ->
+                    com.hazuki.imageorganizer.data.RenameMoveHelper.fromSeqCode(entry.key) ?: Int.MAX_VALUE
+                }
+
+                // 3. 各グループに新しいグループ番号（01, 02, 03...）を割り当て、各ファイルの最終目的ファイル名を決定
+                val renameTargets = mutableListOf<Pair<com.hazuki.imageorganizer.data.ImageItem, String>>()
+                var nextGroupIndex = 1 // 常に「01」からスタート
+
+                for ((_, groupItems) in sortedGroups) {
+                    if (nextGroupIndex > com.hazuki.imageorganizer.data.RenameMoveHelper.MAX_SEQUENCE) {
+                        _uiState.update { it.copy(snackbarMessage = "グループ数が上限（${com.hazuki.imageorganizer.data.RenameMoveHelper.MAX_SEQUENCE}）を超えています") }
+                        return@launch
+                    }
+                    val newGroupCode = com.hazuki.imageorganizer.data.RenameMoveHelper.toSeqCode(nextGroupIndex)
+                    for ((item, info) in groupItems) {
+                        val ext = item.extension
+                        val finalName = if (ext.isNotBlank()) {
+                            "${sanitizedNewLabel}_${newGroupCode}_${info.seqCode}.$ext"
+                        } else {
+                            "${sanitizedNewLabel}_${newGroupCode}_${info.seqCode}"
+                        }
+                        renameTargets.add(item to finalName)
+                    }
+                    nextGroupIndex++
+                }
+
+                // すでに全て目的の名前になっているかチェック（変更不要なら安全に終了）
+                val needRenameTargets = renameTargets.filter { (item, finalName) -> item.displayName != finalName }
+                if (needRenameTargets.isEmpty()) {
+                    _uiState.update { it.copy(snackbarMessage = "すべてのファイルが既に正しく整列されています") }
+                    return@launch
+                }
+
+                var successCount = 0
+
+                val totalCount = needRenameTargets.size
+
+                when {
+                    // ---- ① SAFフォルダ（端末本体やSDカードのフォルダ）の場合 ----
+                    treeUri != null -> {
+                        val resolver = getApplication<android.app.Application>().contentResolver
+                        val timestamp = System.currentTimeMillis()
+
+                        // 【第1段階：一時退避リネーム】
+                        // 衝突を100%回避するため、名前変更が必要なファイルを一時名にリネーム
+                        val intermediateList = mutableListOf<Pair<android.net.Uri, String>>()
+                        for ((index, pair) in needRenameTargets.withIndex()) {
+                            val (item, finalName) = pair
+                            val current = index + 1
+                            val percent = ((current.toFloat() / totalCount) * 50).toInt()
+                            val ratio = (current.toFloat() / totalCount) * 0.5f
+                            _uiState.update { 
+                                it.copy(
+                                    defragProgressText = "第1段階: 一時退避中... $current/${totalCount}枚 ($percent%)",
+                                    defragProgressRatio = ratio
+                                )
+                            }
+
+                            val ext = item.extension
+                            val tempName = if (ext.isNotBlank()) {
+                                "__defrag_tmp_${timestamp}_${index}.$ext"
+                            } else {
+                                "__defrag_tmp_${timestamp}_${index}"
+                            }
+                            try {
+                                val renamedUri = android.provider.DocumentsContract.renameDocument(resolver, item.uri, tempName)
+                                if (renamedUri != null) {
+                                    intermediateList.add(renamedUri to finalName)
+                                } else {
+                                    intermediateList.add(item.uri to finalName)
+                                }
+                            } catch (e: Exception) {
+                                intermediateList.add(item.uri to finalName)
+                            }
+                        }
+
+                        // 【第2段階：目的の新しいファイル名へリネーム】
+                        for ((index, pair) in intermediateList.withIndex()) {
+                            val (uri, finalName) = pair
+                            val current = index + 1
+                            val percent = 50 + ((current.toFloat() / totalCount) * 50).toInt()
+                            val ratio = 0.5f + ((current.toFloat() / totalCount) * 0.5f)
+                            _uiState.update { 
+                                it.copy(
+                                    defragProgressText = "第2段階: 本番リネーム中... $current/${totalCount}枚 ($percent%)",
+                                    defragProgressRatio = ratio
+                                )
+                            }
+
+                            try {
+                                val resultUri = android.provider.DocumentsContract.renameDocument(resolver, uri, finalName)
+                                if (resultUri != null) {
+                                    successCount++
+                                }
+                            } catch (e: Exception) {
+                                // 個別失敗はスキップして継続
+                            }
+                        }
+                    }
+
+                    // ---- ② ローカルフォルダ（ZIP展開時など）の場合 ----
+                    zipDir != null -> {
+                        val timestamp = System.currentTimeMillis()
+                        val intermediateList = mutableListOf<Pair<java.io.File, String>>()
+
+                        // 【第1段階：一時退避リネーム】
+                        for ((index, pair) in needRenameTargets.withIndex()) {
+                            val (item, finalName) = pair
+                            val current = index + 1
+                            val percent = ((current.toFloat() / totalCount) * 50).toInt()
+                            val ratio = (current.toFloat() / totalCount) * 0.5f
+                            _uiState.update { 
+                                it.copy(
+                                    defragProgressText = "第1段階: 一時退避中... $current/${totalCount}枚 ($percent%)",
+                                    defragProgressRatio = ratio
+                                )
+                            }
+
+                            // ZIP展開フォルダ（zipDir）とファイル名（displayName）から安全にFileオブジェクトを取得
+                            val file = java.io.File(zipDir, item.displayName)
+                            val ext = file.extension
+                            val tempName = if (ext.isNotBlank()) {
+                                "__defrag_tmp_${timestamp}_${index}.$ext"
+                            } else {
+                                "__defrag_tmp_${timestamp}_${index}"
+                            }
+                            val tempFile = java.io.File(file.parentFile, tempName)
+                            if (file.renameTo(tempFile)) {
+                                intermediateList.add(tempFile to finalName)
+                            } else {
+                                intermediateList.add(file to finalName)
+                            }
+                        }
+
+                        // 【第2段階：目的の新しいファイル名へリネーム】
+                        for ((index, pair) in intermediateList.withIndex()) {
+                            val (file, finalName) = pair
+                            val current = index + 1
+                            val percent = 50 + ((current.toFloat() / totalCount) * 50).toInt()
+                            val ratio = 0.5f + ((current.toFloat() / totalCount) * 0.5f)
+                            _uiState.update { 
+                                it.copy(
+                                    defragProgressText = "第2段階: 本番リネーム中... $current/${totalCount}枚 ($percent%)",
+                                    defragProgressRatio = ratio
+                                )
+                            }
+
+                            val destFile = java.io.File(file.parentFile, finalName)
+                            if (file.renameTo(destFile)) {
+                                successCount++
+                            }
+                        }
+                    }
+
+                    else -> {
+                        _uiState.update { 
+                            it.copy(
+                                snackbarMessage = "この操作を行うには、上部の📁アイコンから対象フォルダを選択して開いてください",
+                                defragProgressText = null,
+                                defragProgressRatio = null
+                            ) 
+                        }
+                        return@launch
+                    }
+                }
+
+                // UIスレッドで選択状態の解除とフォルダの同期更新を行う
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    clearSelection()
+                    _uiState.update { 
+                        it.copy(
+                            snackbarMessage = "${successCount}件のグループ番号を「01」から連続するように整理しました",
+                            defragProgressText = null,
+                            defragProgressRatio = null
+                        ) 
+                    }
+                    reloadCurrentFolder(0)
+                }
+
+            } catch (e: Exception) {
+                _uiState.update { 
+                    it.copy(
+                        snackbarMessage = "GP番号整理中にエラーが発生しました: ${e.localizedMessage}",
+                        defragProgressText = null,
+                        defragProgressRatio = null
+                    ) 
+                }
+            }
+        }
+    }
+
+    /**
      * 【選択画像のコピー】
      * ユーザーが選択した別フォルダへ、選択中の画像をそのままの名前でコピーします。
      * 

@@ -40,8 +40,8 @@ import androidx.compose.ui.unit.dp
  * @param label               現在のラベル名（例: "猫"）
  * @param currentFolderName   現在開いているフォルダ名（ダイアログ表示用）
  * @param isSubfolder         下層フォルダ内にいるかどうか（一括変更ボタン有効/無効判定用）
- * @param onRenameMove        「連番→📁ラベル」実行時のコールバック
- * @param onRenameOnly        「Rename→ラベル連番」実行時のコールバック
+ * @param onRenameMove        「[連番] →📁ラベル」実行時のコールバック
+ * @param onRenameOnly        「リネーム →ラベル [連番]」実行時のコールバック
  * @param onCopyRequested     「コピー」選択時のコールバック（フォルダピッカー起動等）
  * @param onMoveRequested     「移動」選択時のコールバック（フォルダピッカー起動等）
  * @param onDeleteConfirmed   「削除」実行時のコールバック
@@ -59,6 +59,7 @@ fun RenameActionMenu(
     onCopyRequested: () -> Unit,
     onMoveRequested: () -> Unit,
     onDeleteConfirmed: () -> Unit,
+    onDefragGroupNumbers: () -> Unit = {},
     onRenameGroupLabel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -83,18 +84,18 @@ fun RenameActionMenu(
             expanded = showMenu,
             onDismissRequest = { showMenu = false }
         ) {
-            // 1. 連番→📁[ラベル]フォルダへ移動
+            // 1. [連番] →📁[ラベル]フォルダへ移動
             DropdownMenuItem(
-                text = { Text("連番→📁$label") },
+                text = { Text("[連番] →📁$label") },
                 onClick = {
                     showMenu = false
                     pendingAction = "renameMove"
                 }
             )
 
-            // 2. その場で連番リネーム（移動なし）
+            // 2. リネーム →[ラベル] [連番]（移動なし）
             DropdownMenuItem(
-                text = { Text("Rename→${label}連番") },
+                text = { Text("リネーム →$label [連番]") },
                 onClick = {
                     showMenu = false
                     pendingAction = "renameOnly"
@@ -128,8 +129,25 @@ fun RenameActionMenu(
                 }
             )
 
-            // 6. フォルダ内一括ラベル変更（下層フォルダの場合のみ有効）
+            // 6. グループ番号整理（デフラグリナンバー）
             val canRenameGroup = isSubfolder && selectedCount > 0
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = "[$label] GP番号整理",
+                        color = if (canRenameGroup) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                    )
+                },
+                onClick = {
+                    if (canRenameGroup) {
+                        showMenu = false
+                        pendingAction = "defragGroupNumbers"
+                    }
+                }
+            )
+
+            // 7. フォルダ内一括ラベル変更（下層フォルダの場合のみ有効）
             DropdownMenuItem(
                 text = {
                     Text(
@@ -173,6 +191,13 @@ fun RenameActionMenu(
                     "削除する"
                 )
             }
+            "defragGroupNumbers" -> {
+                Triple(
+                    "グループ番号整理の確認",
+                    "フォルダ内の対象ファイルのグループ番号を「01」から連続するように整理し、ラベル名を「$label」に統一します。よろしいですか？",
+                    "実行"
+                )
+            }
             "renameGroup" -> {
                 Triple(
                     "確認",
@@ -194,6 +219,7 @@ fun RenameActionMenu(
                         "renameMove" -> onRenameMove()
                         "renameOnly" -> onRenameOnly()
                         "delete" -> onDeleteConfirmed()
+                        "defragGroupNumbers" -> onDefragGroupNumbers()
                         "renameGroup" -> onRenameGroupLabel()
                     }
                 }) {

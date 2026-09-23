@@ -87,6 +87,9 @@ data class OrganizerUiState(
     val hashMatchEnabled: Boolean = false, // ON: 知覚ハッシュが近い(=ほぼ同一の)画像のみ表示
     val hashMatchThreshold: Int = 10, // ハッシュ許容閾値(1〜40)。値が小さいほど完全一致、大きいほど大まか一致
     val hashProgressText: String? = null, // ハッシュ値計算中の進捗メッセージ(例: "ハッシュ計算中... 120/500枚 (24%)")
+    // 【新規】GP番号整理（デフラグリナンバー）実行中の進捗情報（nullの場合は非表示）
+    val defragProgressText: String? = null, // ダイアログに表示する進捗メッセージ（例: "第1段階: 一時退避中... 250/1800枚 (13%)"）
+    val defragProgressRatio: Float? = null, // プログレスバーの進捗率（0.0f〜1.0f）
     val extensionGroupColors: Map<Long, Char> = emptyMap(), // 重複画像グループごとの色分け(画像ID -> 'A'..'Z')。グリッドの枠線色分けに使用
     val saturationTolerance: Float = 0f, // 0f〜0.35f。0fはこの項目では絞り込まない
     val brightnessTolerance: Float = 0f, // 0f〜0.35f。0fはこの項目では絞り込まない

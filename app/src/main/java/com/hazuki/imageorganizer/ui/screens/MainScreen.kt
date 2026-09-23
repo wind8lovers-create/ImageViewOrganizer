@@ -12,13 +12,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -272,6 +276,10 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                         // 【削除】選択された画像を削除（確認ダイアログで「削除する」が押された後に実行）
                         viewModel.executeDeleteSelected()
                     },
+                    onDefragGroupNumbers = {
+                        // 【[ラベル] GP番号整理】フォルダ内の対象ファイルのグループ番号を01から連続するように整理
+                        viewModel.executeDefragGroupNumbers(state.currentSelectedLabel)
+                    },
                     onRenameGroupLabel = {
                         // 【[ラベル]📁一括変更】フォルダ内の対象ファイル名のラベルを一括置換
                         viewModel.executeRenameGroupLabel(state.currentSelectedLabel)
@@ -425,6 +433,52 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                     }
                 }
             }
+        }
+
+        // ---- GP番号整理（デフラグリナンバー）実行中の進捗ダイアログ ＆ スリープ防止 ----
+        val isDefragging = state.defragProgressText != null
+        // 整理中はスマホの画面自動消灯（スリープ）を防止
+        LocalView.current.keepScreenOn = isDefragging
+
+        if (isDefragging) {
+            AlertDialog(
+                onDismissRequest = { /* 処理中は画面外タップで閉じないよう保護 */ },
+                confirmButton = {}, // 処理中につきボタンなし
+                title = {
+                    Text(
+                        text = "グループ番号を整理中...",
+                        fontWeight = FontWeight.Bold,
+                        color = FujiPrimaryDark
+                    )
+                },
+                text = {
+                    Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                        Text(
+                            text = state.defragProgressText ?: "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = FujiPrimaryDark,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        val progress = state.defragProgressRatio ?: 0f
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(4.dp)),
+                            color = FujiPrimary,
+                            trackColor = FujiPrimary.copy(alpha = 0.2f)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "※安全に2段階リネームを行っています。完了するまでアプリを閉じずにお待ちください。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray
+                        )
+                    }
+                }
+            )
         }
 
         if (state.sortSheetVisible) {

@@ -46,22 +46,32 @@ data class ImageItem(
 }
 
 /** ソート項目 */
-enum class SortOption(val label: String) {
+enum class SortOption(
+    val label: String,
+    /** ユーザー向けのソートメニューに表示するかどうか（内部処理専用の項目はfalseにして非表示） */
+    val isUserSelectable: Boolean = true
+) {
     // 【カタログ表示】各グループの1枚目（01番優先）のみを新しい順（大きい番号順↓）で抽出して一覧表示
     GROUP_CATALOG_DESC("📚 カタログ表示（1枚目）↓"),
     // リネーム済みファイル（_nn_mm形式）のみを抽出し、グループごとにカラー枠線で囲んで名前順で表示
     GROUP_SEQ_ASC("🏷️ グループ連番（枠色別）↑"),
-    // 【救済用ソート】同じグループ番号なのにラベル名が異なっているファイル群のみを抽出し、同一グループ番号ごとに同色枠線でまとめて表示
-    MISMATCHED_GROUP_SEQ_ASC("🏷️ グループ抽出（枠色別）↑"),
-    NAME_ASC("ファイル名 ↑"),
-    NAME_DESC("ファイル名 ↓"),
-    SIZE_ASC("サイズ ↑"),
-    SIZE_DESC("サイズ ↓"),
+    // 【0番断片グループ摘出】同じグループ番号なのにラベル名が異なっているファイル群のみを抽出し、同一グループ番号ごとに同色枠線でまとめて表示
+    MISMATCHED_GROUP_SEQ_ASC("⚡ 0番断片グループ摘出 ↑"),
+    // 内部処理などで使用するため定義は残しつつ、ユーザー選択メニューからは非表示にします
+    NAME_ASC("ファイル名 ↑", isUserSelectable = false),
+    // 漢字など日本語が先頭に来て、数字（01など）が末尾に来る降順ソート
+    NAME_DESC("ファイル名 ↓（漢→数）"),
+    // メニューからは非表示（大きい順のみ提供）
+    SIZE_ASC("サイズ ↑", isUserSelectable = false),
+    // ファイルサイズの大きな画像から順に並べる降順ソート
+    SIZE_DESC("サイズ ↓（大きい順）"),
     DATE_ASC("日付 ↑"),
     DATE_DESC("日付 ↓");
 
     companion object {
         val DEFAULT = DATE_DESC
+        /** ユーザー選択用メニューに表示するソート項目のリスト（非表示の項目を除外） */
+        val visibleValues: List<SortOption> get() = values().filter { it.isUserSelectable }
     }
 }
 

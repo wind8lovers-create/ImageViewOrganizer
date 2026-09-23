@@ -163,6 +163,7 @@ fun OrganizerTopBar(
     // 【※3】従来の「コピー」は削除、「移動」は「親フォルダへ移動」に変更
     onMoveToParentRequested: () -> Unit = {},
     onDeleteConfirmed: () -> Unit = {},
+    onDefragGroupNumbers: () -> Unit = {}, // 【新規】フォルダ内のグループ番号整理（デフラグリナンバー）
     onRenameGroupLabel: () -> Unit = {},
 
     // ---- しおり機能（「選択へ」）----
@@ -277,7 +278,8 @@ fun OrganizerTopBar(
                         expanded = showSortMenu,
                         onDismissRequest = { showSortMenu = false }
                     ) {
-                        SortOption.values().forEach { option ->
+                        // ユーザー選択可能なソート項目（visibleValues）のみをメニューに表示
+                        SortOption.visibleValues.forEach { option ->
                             DropdownMenuItem(
                                 text = {
                                     Text(
@@ -353,6 +355,7 @@ fun OrganizerTopBar(
                         onRenameOnly = onRenameOnly,
                         onMoveToParent = onMoveToParentRequested,
                         onDeleteConfirmed = onDeleteConfirmed,
+                        onDefragGroupNumbers = onDefragGroupNumbers,
                         onRenameGroupLabel = onRenameGroupLabel
                     )
                 }
@@ -558,6 +561,7 @@ fun SelectionMenuButton(
     onRenameOnly: () -> Unit,
     onMoveToParent: () -> Unit,      // 【※3】親フォルダへ移動するコールバック
     onDeleteConfirmed: () -> Unit,
+    onDefragGroupNumbers: () -> Unit = {}, // 【新規】フォルダ内のグループ番号整理（デフラグリナンバー）
     onRenameGroupLabel: () -> Unit
 ) {
     Box {
@@ -582,15 +586,17 @@ fun SelectionMenuButton(
             expanded = showMenu,
             onDismissRequest = { showMenu = false }
         ) {
+            // ⓵ 連番を付与して該当ラベルのフォルダへ移動
             DropdownMenuItem(
-                text = { Text("連番→📁$currentLabel") },
+                text = { Text("[連番] →📁$currentLabel") },
                 onClick = {
                     showMenu = false
                     pendingAction = "renameMove"
                 }
             )
+            // ⓶ 現在のフォルダ内で連番リネーム（フォルダ移動なし）
             DropdownMenuItem(
-                text = { Text("Rename→${currentLabel}連番") },
+                text = { Text("リネーム →$currentLabel [連番]") },
                 onClick = {
                     showMenu = false
                     pendingAction = "renameOnly"
@@ -627,6 +633,14 @@ fun SelectionMenuButton(
                 onClick = {
                     showMenu = false
                     pendingAction = "delete"
+                }
+            )
+            // 【新規】グループ番号整理（デフラグリナンバー）
+            DropdownMenuItem(
+                text = { Text("[$currentLabel] GP番号整理") },
+                onClick = {
+                    showMenu = false
+                    pendingAction = "defragGroupNumbers"
                 }
             )
             DropdownMenuItem(
@@ -666,6 +680,11 @@ fun SelectionMenuButton(
                     "フォルダ内の対象ファイルとフォルダ名を「$currentLabel」に一括変更します。よろしいですか？",
                     "実行"
                 )
+                "defragGroupNumbers" -> Triple(
+                    "グループ番号整理の確認",
+                    "フォルダ内の対象ファイルのグループ番号を「01」から連続するように整理し、ラベル名を「$currentLabel」に統一します。よろしいですか？",
+                    "実行"
+                )
                 else -> return@let
             }
 
@@ -675,12 +694,14 @@ fun SelectionMenuButton(
                 text = { Text(message) },
                 confirmButton = {
                     TextButton(onClick = {
+                        val action = pendingAction
                         pendingAction = null
                         when (action) {
                             "renameMove" -> onRenameMove()
                             "renameOnly" -> onRenameOnly()
                             "moveToParent" -> onMoveToParent()
                             "delete" -> onDeleteConfirmed()
+                            "defragGroupNumbers" -> onDefragGroupNumbers()
                             "renameGroup" -> onRenameGroupLabel()
                         }
                     }) {

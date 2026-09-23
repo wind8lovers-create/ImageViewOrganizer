@@ -62,6 +62,10 @@ data class OrganizerUiState(
     val currentJumpIndex: Int? = null, // 選択画像の中での現在の巡回位置(1〜N)。未ジャンプ時はnull。
 
     val fullscreenIndex: Int? = null, // nullでない場合、その位置の画像を全画面表示
+    // 【カタログ表示用】代表画像ID -> そのグループの画像総枚数（サムネイル上のバッジ表示に使用）
+    val catalogGroupCounts: Map<Long, Int> = emptyMap(),
+    // 【カタログ表示用】カタログサムネイルタップ時に、そのグループ内全画像のみを全画面表示するための専用画像リスト
+    val fullscreenCustomEntries: List<ImageItem>? = null,
 
     val slideshowActive: Boolean = false,
     val slideshowPaused: Boolean = false, // 一時停止中なら true

@@ -47,18 +47,18 @@ data class ImageItem(
 
 /** ソート項目 */
 enum class SortOption(val label: String) {
+    // 【カタログ表示】各グループの1枚目（01番優先）のみを新しい順（大きい番号順↓）で抽出して一覧表示
+    GROUP_CATALOG_DESC("📚 カタログ表示（1枚目）↓"),
     // リネーム済みファイル（_nn_mm形式）のみを抽出し、グループごとにカラー枠線で囲んで名前順で表示
     GROUP_SEQ_ASC("🏷️ グループ連番（枠色別）↑"),
+    // 【救済用ソート】同じグループ番号なのにラベル名が異なっているファイル群のみを抽出し、同一グループ番号ごとに同色枠線でまとめて表示
+    MISMATCHED_GROUP_SEQ_ASC("🏷️ グループ抽出（枠色別）↑"),
     NAME_ASC("ファイル名 ↑"),
     NAME_DESC("ファイル名 ↓"),
     SIZE_ASC("サイズ ↑"),
     SIZE_DESC("サイズ ↓"),
     DATE_ASC("日付 ↑"),
-    DATE_DESC("日付 ↓"),
-    TAKEN_ASC("撮影日 ↑"),
-    TAKEN_DESC("撮影日 ↓"),
-    TYPE_ASC("形式 ↑"),
-    TYPE_DESC("形式 ↓");
+    DATE_DESC("日付 ↓");
 
     companion object {
         val DEFAULT = DATE_DESC

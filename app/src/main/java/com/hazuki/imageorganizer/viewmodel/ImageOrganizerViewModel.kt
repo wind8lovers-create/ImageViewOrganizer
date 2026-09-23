@@ -461,20 +461,68 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
      */
     private fun sortImageList(images: List<ImageItem>, sortOption: SortOption): List<ImageItem> {
         return when (sortOption) {
+            // 【カタログ表示】各グループの代表画像（01番優先、無ければ先頭）を抽出し、グループ番号の新しい順（降順↓）でソート
+            SortOption.GROUP_CATALOG_DESC -> {
+                // 1. リネーム規則に合致する画像を解析してペア化
+                val parsedItems = images.mapNotNull { item ->
+                    RenameMoveHelper.parseRenamedFileInfo(item.displayName)?.let { info ->
+                        item to info
+                    }
+                }
+                // 2. グループ一意キー（label_groupCode）ごとにグルーピング
+                val grouped = parsedItems.groupBy { it.second.groupKey }
+                // 3. 各グループから「01番」の画像を最優先で抽出（無ければ最小連番の画像）
+                val catalogList = grouped.values.mapNotNull { group ->
+                    // 01番を探す
+                    group.firstOrNull { it.second.seqCode == "01" }?.first
+                        // 01番がなければ連番コード（数値）が一番小さい画像を代表とする
+                        ?: group.minByOrNull { RenameMoveHelper.fromSeqCode(it.second.seqCode) ?: 999 }?.first
+                }
+                // 4. 新しい順（降順↓: グループ番号が大きい順、同じならラベル逆順）で並べ替え
+                catalogList.sortedWith(
+                    compareByDescending<ImageItem> { item ->
+                        val info = RenameMoveHelper.parseRenamedFileInfo(item.displayName)
+                        info?.let { RenameMoveHelper.fromSeqCode(it.groupCode) } ?: 0
+                    }.thenByDescending { it.displayName.lowercase() }
+                )
+            }
             // リネーム済み（_nn_mm形式）のファイルのみを抽出し、名前順（昇順）でソート
             SortOption.GROUP_SEQ_ASC -> images
                 .filter { RenameMoveHelper.parseRenamedFileInfo(it.displayName) != null }
                 .sortedBy { it.displayName.lowercase() }
+            // 【救済用ソート】同じグループ番号（例: _34_）なのにラベル名が異なっている不整合グループのみを抽出
+            SortOption.MISMATCHED_GROUP_SEQ_ASC -> {
+                // 1. リネーム規則に合致する画像を抽出して解析情報をペア化
+                val parsedItems = images.mapNotNull { item ->
+                    RenameMoveHelper.parseRenamedFileInfo(item.displayName)?.let { info ->
+                        item to info
+                    }
+                }
+                // 2. グループ番号（groupCode: 例「34」）ごとにグルーピング
+                val groupedByCode = parsedItems.groupBy { it.second.groupCode }
+                // 3. 同じグループ番号の中で、ラベル名（label）が2種類以上混在しているグループのみを抽出
+                val mismatchedPairs = groupedByCode.values
+                    .filter { group ->
+                        group.map { it.second.label }.distinct().size > 1
+                    }
+                    .flatten()
+                // 4. グループ番号（数値順） ➔ 画像連番（数値順）で並べ替え
+                mismatchedPairs
+                    .sortedWith(
+                        compareBy<Pair<ImageItem, RenameMoveHelper.RenamedFileInfo>> {
+                            RenameMoveHelper.fromSeqCode(it.second.groupCode) ?: 0
+                        }.thenBy {
+                            RenameMoveHelper.fromSeqCode(it.second.seqCode) ?: 0
+                        }
+                    )
+                    .map { it.first }
+            }
             SortOption.NAME_ASC -> images.sortedBy { it.displayName.lowercase() }
             SortOption.NAME_DESC -> images.sortedByDescending { it.displayName.lowercase() }
             SortOption.SIZE_ASC -> images.sortedBy { it.sizeBytes }
             SortOption.SIZE_DESC -> images.sortedByDescending { it.sizeBytes }
             SortOption.DATE_ASC -> images.sortedBy { it.dateModifiedEpochSec }
             SortOption.DATE_DESC -> images.sortedByDescending { it.dateModifiedEpochSec }
-            SortOption.TAKEN_ASC -> images.sortedBy { it.effectiveTakenEpochMillis }
-            SortOption.TAKEN_DESC -> images.sortedByDescending { it.effectiveTakenEpochMillis }
-            SortOption.TYPE_ASC -> images.sortedBy { it.extension }
-            SortOption.TYPE_DESC -> images.sortedByDescending { it.extension }
         }
     }
 
@@ -522,15 +570,22 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
         comparingJob?.cancel()
 
-        // 「🏷️ グループ連番（枠色別）↓」ソートが選ばれている場合
-        if (state.sortOption == SortOption.GROUP_SEQ_ASC) {
+        // 「🏷️ グループ連番（枠色別）↑」または「🏷️ グループ抽出（枠色別）↑」ソートが選ばれている場合
+        if (state.sortOption == SortOption.GROUP_SEQ_ASC || state.sortOption == SortOption.MISMATCHED_GROUP_SEQ_ASC) {
+            val isMismatchedSort = state.sortOption == SortOption.MISMATCHED_GROUP_SEQ_ASC
+
             // 【自動フォールバック処理】
-            // グループ連番（_nn_mm形式）の画像がフォルダ内に1枚も存在しない場合、
+            // 対象となる画像がフォルダ内に1枚も存在しない場合、
             // 「画像が見つかりませんでした」画面で作業が止まるのを防ぐため、
             // 自動的にソート順を「日付 ↑（古い順）」へ切り替えて全画像を一覧表示します。
             if (sorted.isEmpty() && allImages.isNotEmpty()) {
                 val fallbackOption = SortOption.DATE_ASC
                 val fallbackSorted = sortedImages(fallbackOption)
+                val fallbackMsg = if (isMismatchedSort) {
+                    "ラベル違いのグループは見つかりませんでした（日付↑で表示）"
+                } else {
+                    "グループ連番の画像がないため、日付↑で表示しました"
+                }
                 _uiState.update {
                     it.copy(
                         sortOption = fallbackOption, // ソート順を「日付 ↑」に更新
@@ -538,7 +593,7 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                         isComparing = false,
                         matchedCount = 0,
                         extensionGroupColors = emptyMap(),
-                        snackbarMessage = "グループ連番の画像がないため、日付↑で表示しました"
+                        snackbarMessage = fallbackMsg
                     )
                 }
                 return
@@ -549,14 +604,19 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
             for (img in sorted) {
                 val info = RenameMoveHelper.parseRenamedFileInfo(img.displayName) ?: continue
-                // グループ一意キー（例: "01犬_01"）ごとに出現順でインデックス（0, 1, 2...）を割り当てる
-                val groupIdx = groupKeyIndexMap.getOrPut(info.groupKey) { groupKeyIndexMap.size }
+                // グループ一意キー:
+                // 通常のグループ連番ソートは「ラベル名_グループ番号」ごとに色分けしますが、
+                // 不一致抽出ソートでは「グループ番号」のみをキーにして、ラベル名が食い違っていても仲間同士で同一の枠色を割り当てます
+                val colorKey = if (isMismatchedSort) info.groupCode else info.groupKey
+                val groupIdx = groupKeyIndexMap.getOrPut(colorKey) { groupKeyIndexMap.size }
                 // 26色パレット（A〜Z）をグループ番号順に循環割り当て
                 val colorCategory = ('A'.code + (groupIdx % 26)).toChar()
                 groupColors[img.id] = colorCategory
             }
 
-            val msg = if (sorted.isEmpty()) "リネーム形式（_nn_mm）の画像が見つかりませんでした" else null
+            val msg = if (sorted.isEmpty()) {
+                if (isMismatchedSort) "ラベル違いのグループは見つかりませんでした" else "リネーム形式（_nn_mm）の画像が見つかりませんでした"
+            } else null
 
             _uiState.update {
                 it.copy(
@@ -570,28 +630,67 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             return
         }
 
-        // それ以外の通常ソート時は枠線色をリセット
+        // 「📚 カタログ表示（1枚目）↓」ソートが選ばれている場合
+        if (state.sortOption == SortOption.GROUP_CATALOG_DESC) {
+            // 対象となる画像がフォルダ内に1枚も存在しない場合
+            if (sorted.isEmpty() && allImages.isNotEmpty()) {
+                val fallbackOption = SortOption.DATE_DESC
+                val fallbackSorted = sortedImages(fallbackOption)
+                _uiState.update {
+                    it.copy(
+                        sortOption = fallbackOption,
+                        entries = fallbackSorted,
+                        isComparing = false,
+                        matchedCount = 0,
+                        extensionGroupColors = emptyMap(),
+                        catalogGroupCounts = emptyMap(),
+                        snackbarMessage = "グループ化された画像がないため、日付↓で表示しました"
+                    )
+                }
+                return
+            }
+
+            // 代表画像ごとに、そのグループの総枚数を算出
+            val counts = mutableMapOf<Long, Int>()
+            val parsedAll = allImages.mapNotNull { item ->
+                RenameMoveHelper.parseRenamedFileInfo(item.displayName)?.let { item to it }
+            }
+            val grouped = parsedAll.groupBy { it.second.groupKey }
+            for (repImg in sorted) {
+                val repInfo = RenameMoveHelper.parseRenamedFileInfo(repImg.displayName) ?: continue
+                val totalInGroup = grouped[repInfo.groupKey]?.size ?: 1
+                counts[repImg.id] = totalInGroup
+            }
+
+            val msg = if (sorted.isEmpty()) "グループ画像が見つかりませんでした" else null
+            _uiState.update {
+                it.copy(
+                    entries = sorted,
+                    isComparing = false,
+                    matchedCount = sorted.size,
+                    extensionGroupColors = emptyMap(),
+                    catalogGroupCounts = counts,
+                    snackbarMessage = msg
+                )
+            }
+            return
+        }
+
+        // それ以外の通常ソート時は枠線色・カタログ枚数をリセット
         _uiState.update {
             it.copy(
                 entries = sorted,
                 isComparing = false,
                 matchedCount = 0,
-                extensionGroupColors = emptyMap()
+                extensionGroupColors = emptyMap(),
+                catalogGroupCounts = emptyMap()
             )
         }
     }
 
     fun setSortOption(option: SortOption) {
         _uiState.update { it.copy(sortOption = option, sortSheetVisible = false) }
-        if (option == SortOption.TAKEN_ASC || option == SortOption.TAKEN_DESC) {
-            // 撮影日ソートの時だけEXIFを読みに行く(他のソートでは不要な重い処理を避ける)
-            viewModelScope.launch {
-                allImages = repository.ensureDateTaken(allImages)
-                applyDisplayList()
-            }
-        } else {
-            applyDisplayList()
-        }
+        applyDisplayList()
     }
 
     fun toggleSortSheet(visible: Boolean) {
@@ -1078,6 +1177,13 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     fun handleLongPress(imageId: Long) {
         setFocusedImage(imageId)
         val state = _uiState.value
+
+        // 【カタログ表示時の長押し: パターンB】
+        // 通常のグループ連番表示へ自動で切り替え、長押しされた画像のグループへジャンプ＆フォーカス
+        if (state.sortOption == SortOption.GROUP_CATALOG_DESC) {
+            jumpFromCatalogToGroupSeq(imageId)
+            return
+        }
 
         // 【※1：選択モード中の範囲一括選択】
         // 選択モードがONの場合、直前に選んだ画像Aから今回長押しした画像Bまでの間を一括選択する
@@ -2019,8 +2125,58 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         _uiState.update { it.copy(fullscreenIndex = index) }
     }
 
+    /**
+     * 【カタログ表示用タップ: パターンA】
+     * カタログサムネイルをタップした際、その画像が属するグループ内の全画像を抽出して全画面ビューワーを起動します。
+     * 左右スワイプでそのグループの画像だけを閲覧でき、閉じればカタログ一覧に戻ります。
+     */
+    fun openCatalogGroupFullscreen(image: ImageItem) {
+        val info = RenameMoveHelper.parseRenamedFileInfo(image.displayName)
+        if (info == null) {
+            val index = _uiState.value.entries.indexOfFirst { it.id == image.id }.coerceAtLeast(0)
+            openFullscreen(index)
+            return
+        }
+        // 同じグループキー（label_groupCode）を持つ全画像を allImages から抽出
+        val groupImages = allImages
+            .filter { RenameMoveHelper.parseRenamedFileInfo(it.displayName)?.groupKey == info.groupKey }
+            // 連番順（00, 01, 02...）で並び替え
+            .sortedBy { RenameMoveHelper.parseRenamedFileInfo(it.displayName)?.let { inf -> RenameMoveHelper.fromSeqCode(inf.seqCode) } ?: 0 }
+
+        val startIndex = groupImages.indexOfFirst { it.id == image.id }.coerceAtLeast(0)
+        _uiState.update {
+            it.copy(
+                fullscreenCustomEntries = groupImages,
+                fullscreenIndex = startIndex
+            )
+        }
+    }
+
+    /**
+     * 【カタログ表示用長押し: パターンB】
+     * カタログサムネイルを長押しした際、通常のグループ連番ソートへ切り替え、そのグループの先頭画像へ自動ジャンプ＆フォーカスします。
+     */
+    fun jumpFromCatalogToGroupSeq(imageId: Long) {
+        val targetOption = SortOption.GROUP_SEQ_ASC
+        val sorted = sortedImages(targetOption)
+        val targetIndex = sorted.indexOfFirst { it.id == imageId }
+
+        _uiState.update {
+            it.copy(
+                sortOption = targetOption,
+                entries = sorted,
+                focusedImageId = imageId,
+                snackbarMessage = "通常のグループ連番表示に切り替えました"
+            )
+        }
+        applyDisplayList()
+        if (targetIndex >= 0) {
+            requestScroll(targetIndex)
+        }
+    }
+
     fun closeFullscreen() {
-        _uiState.update { it.copy(fullscreenIndex = null) }
+        _uiState.update { it.copy(fullscreenIndex = null, fullscreenCustomEntries = null) }
     }
 
     // ------------------------------------------------------------------

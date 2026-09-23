@@ -325,10 +325,14 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                                     selectionMode = state.selectionMode,
                                     gridState = gridState,
                                     onTap = { index ->
-                                        val id = state.entries.getOrNull(index)?.id
+                                        val item = state.entries.getOrNull(index)
+                                        val id = item?.id
                                         if (id != null) viewModel.setFocusedImage(id)
                                         if (state.selectionMode) {
                                             if (id != null) viewModel.toggleSelected(id)
+                                        } else if (state.sortOption == com.hazuki.imageorganizer.data.SortOption.GROUP_CATALOG_DESC && item != null) {
+                                            // 【カタログ表示時のタップ: パターンA】そのグループの画像だけを全画面ビューワーで閲覧
+                                            viewModel.openCatalogGroupFullscreen(item)
                                         } else {
                                             viewModel.openFullscreen(index)
                                         }
@@ -341,7 +345,7 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                                         }
                                     },
                                     // 拡張選択モード中、または「🏷️ グループ連番（枠色別）↓」ソート中は、計算された枠線色(A〜Z)を適用してグループを見分けやすくする
-                                    groupedImageIds = if (state.extensionSelectionActive || state.sortOption == com.hazuki.imageorganizer.data.SortOption.GROUP_SEQ_ASC) {
+                                    groupedImageIds = if (state.extensionSelectionActive || state.sortOption == com.hazuki.imageorganizer.data.SortOption.GROUP_SEQ_ASC || state.sortOption == com.hazuki.imageorganizer.data.SortOption.MISMATCHED_GROUP_SEQ_ASC) {
                                         state.extensionGroupColors
                                     } else {
                                         state.groupedImageIds
@@ -350,6 +354,8 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                                     // 【起点フォルダ名】ルート直下画像（○）と下層フォルダ画像（📁）を見分けるために渡す
                                     // パス形式(例: "Download/未整理")の場合でも末尾のフォルダ名("未整理")を抽出
                                     currentFolderName = state.currentFolderLabel.substringAfterLast('/'),
+                                    // 【カタログ表示用】画像ごとのグループ総枚数を渡してバッジ表示
+                                    catalogGroupCounts = state.catalogGroupCounts,
                                     modifier = Modifier.fillMaxSize().padding(padding)
                                 )
                             }
@@ -442,8 +448,9 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
         }
 
         state.fullscreenIndex?.let { idx ->
-            // グループ内画面ではそのグループの画像リスト、それ以外は通常の一覧を対象にする
-            val fullscreenSource = if (state.screenMode == ScreenMode.GROUP_DETAIL) state.groupDetailEntries else state.entries
+            // カタロググループ閲覧時はそのグループ画像リスト、グループ内画面ではそのグループの画像リスト、それ以外は通常の一覧を対象にする
+            val fullscreenSource = state.fullscreenCustomEntries
+                ?: if (state.screenMode == ScreenMode.GROUP_DETAIL) state.groupDetailEntries else state.entries
             FullscreenViewer(
                 entries = fullscreenSource,
                 startIndex = idx,

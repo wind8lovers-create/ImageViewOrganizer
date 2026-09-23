@@ -39,6 +39,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.hazuki.imageorganizer.data.ImageItem
@@ -65,7 +68,9 @@ fun ImageGrid(
     groupedImageIds: Map<Long, Char> = emptyMap(),
     dimmedIds: Set<Long> = emptySet(),
     // 【起点フォルダ名】ルート直下の画像か下層フォルダの画像かを判別するために使用（例: "未整理"）
-    currentFolderName: String? = null
+    currentFolderName: String? = null,
+    // 【カタログ表示用】画像ID -> そのグループの総枚数
+    catalogGroupCounts: Map<Long, Int> = emptyMap()
 ) {
     val state = gridState
     val coroutineScope = rememberCoroutineScope()
@@ -88,7 +93,8 @@ fun ImageGrid(
                     onLongPress = onLongPress,
                     groupCategory = groupedImageIds[entries[index].id],
                     isDimmed = entries[index].id in dimmedIds,
-                    currentFolderName = currentFolderName
+                    currentFolderName = currentFolderName,
+                    catalogCount = catalogGroupCounts[entries[index].id]
                 )
             }
         }
@@ -186,7 +192,9 @@ private fun GridCellContent(
     groupCategory: Char? = null,
     isDimmed: Boolean = false,
     // 【起点フォルダ名】ルート直下か下層フォルダかを比較判別するためのフォルダ名
-    currentFolderName: String? = null
+    currentFolderName: String? = null,
+    // 【カタログ表示時】グループの画像総枚数（例: 3）
+    catalogCount: Int? = null
 ) {
     val image = entries[index]
     val isSelected = image.id in selectedIds
@@ -265,6 +273,28 @@ private fun GridCellContent(
                     .padding(2.dp)
                     .size(18.dp)
             )
+        }
+
+        // 【カタログ表示時】グループの画像総枚数を右下にバッジ表示（例: "3枚"）
+        if (catalogCount != null && catalogCount > 0) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(3.dp)
+                    .background(
+                        color = Color.Black.copy(alpha = 0.70f),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp)
+                    )
+                    .padding(horizontal = 4.dp, vertical = 1.dp)
+            ) {
+                // レトロDOS/グリーンスクリーン風の抹茶グリーン（#1DBF00）で枚数を表示
+                Text(
+                    text = "${catalogCount}枚",
+                    color = Color(0xFF1DBF00),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }

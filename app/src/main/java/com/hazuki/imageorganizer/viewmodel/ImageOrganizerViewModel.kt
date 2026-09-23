@@ -69,6 +69,12 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
     private var currentFolderDocId: String? = null
     private var currentZipDir: java.io.File? = null
 
+    // 【グループ比較・下層フォルダ移動前のスクロール位置記憶】
+    // 下層フォルダへ潜ったりグループ比較に入る直前に見ていた画像IDとインデックスを一時記憶し、
+    // カテゴリーラベル長押し等でハッシュ一覧へ復帰した際にその位置へピタリとスクロール復元するために使用します。
+    private var preGroupImageId: Long? = null
+    private var preGroupIndex: Int? = null
+
     /**
      * 【下層📁ON時のハッシュ重複計算結果キャッシュ】
      * 18,800枚などの大規模な下層画像全体のハッシュ比較結果をメモリに一時保持します。
@@ -1079,9 +1085,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             val anchorId = lastSelectedImageId ?: state.selectedIds.firstOrNull()
             if (anchorId != null) {
                 // 起点画像Aが存在する場合：A〜Bまでの画像をまとめて選択状態にする
-                selectRange(anchorId = anchorId, targetId = imageId)
-                // 今回長押しした画像Bを次回の範囲選択の新しい起点として更新
-                lastSelectedImageId = imageId
+                // 【案1】実際に選択された最後の画像ID（B直前の同一属性画像など）を次回の起点として受け取る
+                val lastSelectedId = selectRange(anchorId = anchorId, targetId = imageId)
+                // 実際に選択された画像を次回の範囲選択の新しい起点として更新
+                lastSelectedImageId = lastSelectedId
             } else {
                 // まだ1枚も選択されていない状態で長押しされた場合：長押しされた画像を1枚選択
                 toggleSelected(imageId)
@@ -1128,6 +1135,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
         val targetIndex = currentState.entries.indexOfFirst { it.id == targetImageId }
         if (targetIndex < 0) return
+
+        // 【復帰用の位置記憶】ハッシュ比較一覧の中で長押しされた画像のIDと位置を記録
+        preGroupImageId = targetImageId
+        preGroupIndex = targetIndex
 
         // ① 長押しされた画像を中心にして、前後に同じ枠色が連続している「同一類似ブロック」の仲間を確実に抽出
         val targetColor = currentState.extensionGroupColors[targetImageId]
@@ -1224,6 +1235,18 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         // しおりのカーソル位置をリセット
         jumpCursorIndex = -1
 
+        // 【移動前の位置へのスクロール復元】
+        // 記憶していた画像ID（またはインデックス）から、復元後のハッシュ一覧内での位置を安全に算出
+        val foundIndex = preGroupImageId?.let { id ->
+            backupEntries.indexOfFirst { it.id == id }.takeIf { it >= 0 }
+        }
+        val restoreTargetIndex: Int = foundIndex ?: preGroupIndex ?: 0
+
+        val restoredFocusId = preGroupImageId
+        // 復帰処理を行うため記録用変数は初期化
+        preGroupImageId = null
+        preGroupIndex = null
+
         _uiState.update {
             it.copy(
                 isGroupComparisonMode = false,
@@ -1239,6 +1262,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 selectionMode = false,
                 isSelectionMode = false,
                 currentJumpIndex = null,
+                // 移動前の画像にフォーカスを合わせ、その位置へスクロール指示を発行
+                focusedImageId = restoredFocusId ?: it.focusedImageId,
+                pendingScrollRequest = ScrollRequest(restoreTargetIndex.coerceAtLeast(0)),
                 snackbarMessage = "ハッシュ比較一覧に復帰しました（しおり・選択リセット）"
             )
         }
@@ -1259,6 +1285,11 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         val targetDocId = targetImage.parentFolderDocId ?: return
         val baseTree = rootTreeUri ?: currentFolderUri ?: return
         val folderName = targetImage.parentFolderName ?: "フォルダ"
+
+        // 【復帰用の位置記憶】下層フォルダへ移動する直前のハッシュ一覧における画像IDとインデックスを記録
+        val sourceIndex = currentState.entries.indexOfFirst { it.id == targetImage.id }
+        preGroupImageId = targetImage.id
+        preGroupIndex = if (sourceIndex >= 0) sourceIndex else null
 
         // ① 現在の親フォルダを履歴スタックに記録（復帰時に親フォルダへ戻れるようにする）
         pushCurrentFolderToBackStack()
@@ -1385,6 +1416,18 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         // しおり位置をリセット
         jumpCursorIndex = -1
 
+        // 【下層フォルダ移動前の位置へのスクロール復元】
+        // 記憶していた画像ID（またはインデックス）から、復元後のハッシュ一覧内での位置を安全に算出
+        val foundIndex = preGroupImageId?.let { id ->
+            backupEntries.indexOfFirst { it.id == id }.takeIf { it >= 0 }
+        }
+        val restoreTargetIndex: Int = foundIndex ?: preGroupIndex ?: 0
+
+        val restoredFocusId = preGroupImageId
+        // 復帰処理を行うため記録用変数は初期化
+        preGroupImageId = null
+        preGroupIndex = null
+
         // 【全画像リストの同期】
         // 下層フォルダ読み込み時に書き換わっていた allImages を親フォルダの画像一覧へ完全同期。
         // これにより、その後のソート変更などで下層フォルダの画像が混ざる不整合を防ぎます。
@@ -1408,6 +1451,9 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 selectionMode = false,
                 isSelectionMode = false,
                 currentJumpIndex = null,
+                // 移動前の画像にフォーカスを合わせ、その位置へスクロール指示を発行
+                focusedImageId = restoredFocusId ?: it.focusedImageId,
+                pendingScrollRequest = ScrollRequest(restoreTargetIndex.coerceAtLeast(0)),
                 snackbarMessage = "元のハッシュ比較一覧に復帰しました"
             )
         }
@@ -1463,21 +1509,68 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /** 現在の表示順(entries)を基準に、anchorIdとtargetIdの間にある画像をまとめて選択する。 */
-    private fun selectRange(anchorId: Long, targetId: Long) {
+    /**
+     * 現在の表示順(entries)を基準に、anchorIdとtargetIdの間にある画像をまとめて選択する。
+     *
+     * 【下層📁ONの重複ハッシュ一覧時の特別ルール】
+     * 「★拡張選択」かつ「下層フォルダON」の場合、起点画像(anchorId)と同じ所属属性
+     * （ルート直下○同士、または下層フォルダ📁同士）のみを抽出して一括選択します。
+     * これにより、下層フォルダの画像が混ざっていても、意図しない種類のファイルを巻き込まずに安全に範囲選択できます。
+     *
+     * @return 実際に選択された最後の画像ID（次回の起点として使用するID）
+     */
+    private fun selectRange(anchorId: Long, targetId: Long): Long {
         val entries = _uiState.value.entries
         val anchorIndex = entries.indexOfFirst { it.id == anchorId }
         val targetIndex = entries.indexOfFirst { it.id == targetId }
         if (anchorIndex < 0 || targetIndex < 0) {
             // 万一見つからなければ、安全のため通常の選択開始にフォールバックする
             startSelection(targetId)
-            return
+            return targetId
         }
-        // ソート表示順で起点と終点の間のインデックス範囲を抽出
-        val range = minOf(anchorIndex, targetIndex)..maxOf(anchorIndex, targetIndex)
-        val rangeIds = range.map { entries[it].id }.toSet()
+
+        val state = _uiState.value
+
+        // 起点と終点の間のインデックス範囲（昇順・降順どちらの方向への長押しでも正しく順序を維持する）
+        val indices = if (anchorIndex <= targetIndex) {
+            anchorIndex..targetIndex
+        } else {
+            anchorIndex downTo targetIndex
+        }
+
+        // 起点フォルダ名（パスの末尾、例: "未整理"）を取得
+        val currentRootName = state.currentFolderLabel.substringAfterLast('/')
+
+        // 起点画像が「下層フォルダ内の画像（📁）」かどうかを判定（ImageGridの表示判定と完全一致）
+        val anchorItem = entries[anchorIndex]
+        val isAnchorSubFolder = !anchorItem.parentFolderName.isNullOrBlank() &&
+                !currentRootName.isNullOrBlank() &&
+                anchorItem.parentFolderName != currentRootName
+
+        // ★ハッシュ重複比較中 かつ 下層フォルダ読み込みON の場合のみ、所属属性によるフィルタリングを行う
+        val filteredItems = if (state.extensionSelectionActive && state.includeSubFolders) {
+            indices.map { entries[it] }.filter { item ->
+                val isItemSubFolder = !item.parentFolderName.isNullOrBlank() &&
+                        !currentRootName.isNullOrBlank() &&
+                        item.parentFolderName != currentRootName
+                // 起点画像と同じ属性（ルート○同士、または下層📁同士）のみを選択対象とする！
+                isItemSubFolder == isAnchorSubFolder
+            }
+        } else {
+            // 通常の一覧表示や下層フォルダOFF時は、これまで通り範囲内の全画像を選択対象とする
+            indices.map { entries[it] }
+        }
+
+        // 抽出された画像のIDセット
+        val rangeIds = filteredItems.map { it.id }.toSet()
+
+        // 進行方向（anchor → target）で実際に選択された最後の画像（終点側に一番近い選択画像）を特定
+        // 起点自身は必ず条件を満たすため filteredItems は空になりませんが、念のため anchorId でフォールバック
+        val actualLastItem = filteredItems.lastOrNull()
+        val actualLastId = actualLastItem?.id ?: anchorId
+
         _uiState.update { currentState ->
-            // 既存の選択状態を保持しつつ、範囲内の画像を追加合流する
+            // 既存の選択状態を保持しつつ、フィルタ抽出された範囲内の画像を追加合流する
             val newSelectedIds = currentState.selectedIds + rangeIds
             currentState.copy(
                 selectionMode = true,
@@ -1485,9 +1578,12 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
                 // ---- 新しい選択状態も更新（ラベルは現在の選択を維持する） ----
                 isSelectionMode = true,
                 selectedCount = newSelectedIds.size,
-                focusedImageId = targetId
+                // 実際に選択された最後の画像にフォーカスを合わせる
+                focusedImageId = actualLastId
             )
         }
+
+        return actualLastId
     }
 
     /**

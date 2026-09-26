@@ -352,8 +352,11 @@ fun MainScreen(viewModel: ImageOrganizerViewModel = viewModel()) {
                                             viewModel.handleLongPress(id)
                                         }
                                     },
-                                    // 拡張選択モード中、または「🏷️ グループ連番（枠色別）↓」ソート中は、計算された枠線色(A〜Z)を適用してグループを見分けやすくする
-                                    groupedImageIds = if (state.extensionSelectionActive || state.sortOption == com.hazuki.imageorganizer.data.SortOption.GROUP_SEQ_ASC || state.sortOption == com.hazuki.imageorganizer.data.SortOption.MISMATCHED_GROUP_SEQ_ASC) {
+                                    // 拡張選択モード中、または「🏷️ グループ連番（枠色別）↑」「🏷️ グループ連番合計サイズ大↓」等のソート中は、計算された枠線色(A〜Z)を適用してグループを見分けやすくする
+                                    groupedImageIds = if (state.extensionSelectionActive ||
+                                        state.sortOption == com.hazuki.imageorganizer.data.SortOption.GROUP_SEQ_ASC ||
+                                        state.sortOption == com.hazuki.imageorganizer.data.SortOption.GROUP_SEQ_TOTAL_SIZE_DESC ||
+                                        state.sortOption == com.hazuki.imageorganizer.data.SortOption.MISMATCHED_GROUP_SEQ_ASC) {
                                         state.extensionGroupColors
                                     } else {
                                         state.groupedImageIds

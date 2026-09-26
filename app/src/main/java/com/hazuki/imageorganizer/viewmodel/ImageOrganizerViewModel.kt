@@ -490,6 +490,34 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
             SortOption.GROUP_SEQ_ASC -> images
                 .filter { RenameMoveHelper.parseRenamedFileInfo(it.displayName) != null }
                 .sortedBy { it.displayName.lowercase() }
+            // 【グループ連番合計サイズ大】同一グループ内の合計ファイルサイズが大きい順（降順↓）にグループを並べ、グループ内は連番昇順で表示
+            SortOption.GROUP_SEQ_TOTAL_SIZE_DESC -> {
+                // 1. リネーム規則（_nn_mm形式）に合致する画像を抽出して解析情報とペア化
+                val parsedItems = images.mapNotNull { item ->
+                    RenameMoveHelper.parseRenamedFileInfo(item.displayName)?.let { info ->
+                        item to info
+                    }
+                }
+                // 2. グループ一意キー（label_groupCode: 例「イベント_01」）ごとにグルーピング
+                val grouped = parsedItems.groupBy { it.second.groupKey }
+                // 3. 各グループの合計ファイルサイズ（bytes）を合算し、合計サイズが大きい順（降順↓）にグループを並び替え
+                // ※ 合計サイズが全く同じ場合はグループキー昇順（名前順）で安定化
+                val sortedGroups = grouped.values.sortedWith(
+                    compareByDescending<List<Pair<ImageItem, RenameMoveHelper.RenamedFileInfo>>> { group ->
+                        group.sumOf { it.first.sizeBytes }
+                    }.thenBy { group ->
+                        group.firstOrNull()?.second?.groupKey ?: ""
+                    }
+                )
+                // 4. 各グループ内では画像の連番昇順（01, 02...）に並べてフラットな一覧リストにする
+                sortedGroups.flatMap { group ->
+                    group.sortedWith(
+                        compareBy<Pair<ImageItem, RenameMoveHelper.RenamedFileInfo>> {
+                            RenameMoveHelper.fromSeqCode(it.second.seqCode) ?: 0
+                        }.thenBy { it.first.displayName.lowercase() }
+                    ).map { it.first }
+                }
+            }
             // 【救済用ソート】同じグループ番号（例: _34_）なのにラベル名が異なっている不整合グループのみを抽出
             SortOption.MISMATCHED_GROUP_SEQ_ASC -> {
                 // 1. リネーム規則に合致する画像を抽出して解析情報をペア化
@@ -570,8 +598,10 @@ class ImageOrganizerViewModel(application: Application) : AndroidViewModel(appli
 
         comparingJob?.cancel()
 
-        // 「🏷️ グループ連番（枠色別）↑」または「🏷️ グループ抽出（枠色別）↑」ソートが選ばれている場合
-        if (state.sortOption == SortOption.GROUP_SEQ_ASC || state.sortOption == SortOption.MISMATCHED_GROUP_SEQ_ASC) {
+        // 「🏷️ グループ連番（枠色別）↑」「🏷️ グループ連番合計サイズ大↓」「⚡ 0番断片グループ摘出 ↑」ソートが選ばれている場合
+        if (state.sortOption == SortOption.GROUP_SEQ_ASC ||
+            state.sortOption == SortOption.GROUP_SEQ_TOTAL_SIZE_DESC ||
+            state.sortOption == SortOption.MISMATCHED_GROUP_SEQ_ASC) {
             val isMismatchedSort = state.sortOption == SortOption.MISMATCHED_GROUP_SEQ_ASC
 
             // 【自動フォールバック処理】

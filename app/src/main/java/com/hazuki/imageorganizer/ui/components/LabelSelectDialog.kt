@@ -35,7 +35,7 @@ import com.hazuki.imageorganizer.ui.theme.FujiPrimaryDark
  * 機能：
  * - TopBar の中央に配置されるタグアイコンボタンをタップで表示
  * - 通常タップ: 作業ラベル（currentLabel）を変更
- * - 長押し: カレントフォルダ直下にそのラベルのフォルダがあれば移動
+ * - 長押し: 作業ラベル（currentLabel）を変更 ＋ カレントフォルダ直下にそのラベルのフォルダがあれば移動
  * =====================================================================
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -153,8 +153,12 @@ fun LabelSelectDialog(
                                 onLabelSelected(label)
                             },
                             onLongClick = {
-                                // 【長押し】サブフォルダ移動（直下に同名フォルダが存在すれば移動）
+                                // 【長押し】作業ラベル変更 ＋ サブフォルダ移動
+                                // ① ドロップダウンメニューを閉じる
                                 showMenu = false
+                                // ② 通常タップと同様に作業ラベル（currentLabel）を長押ししたラベルに切り替え
+                                onLabelSelected(label)
+                                // ③ 現在のフォルダ直下に同名サブフォルダが存在すればそこへ移動
                                 onLabelClick(label)
                             }
                         )
